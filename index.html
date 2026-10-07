@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Niogen Tracker</title>
+  <meta name="theme-color" content="#17405f">
+  <meta name="description" content="Inventory and restoration cost tracker for vintage radios.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <script>
+    // Apply the saved theme before first paint so there is no light flash in dark mode.
+    try {
+      var p = localStorage.getItem('niogen-theme') || 'auto';
+      var dark = p === 'dark' || (p === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    } catch (e) {}
+  </script>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <a class="skip" href="#view">Skip to content</a>
+  <header class="topbar">
+    <a class="brand" href="#/radios" aria-label="Niogen Tracker, home">
+      <svg class="dial" viewBox="0 0 48 48" aria-hidden="true">
+        <circle cx="24" cy="24" r="22" fill="#f6ecd2" stroke="#e0762f" stroke-width="3"/>
+        <g stroke="#17405f" stroke-width="2" stroke-linecap="round"><path d="M24 7v4M24 37v4M7 24h4M37 24h4M12 12l3 3M33 33l3 3M36 12l-3 3M15 33l-3 3"/></g>
+        <path d="M24 24 33 14" stroke="#e0762f" stroke-width="3" stroke-linecap="round"/>
+        <circle cx="24" cy="24" r="3.5" fill="#17405f"/>
+      </svg>
+      <span class="brand-name">Niogen Tracker</span>
+    </a>
+    <nav class="nav" aria-label="Main">
+      <a href="#/radios" data-route="radios">Radios</a>
+      <a href="#/inventory" data-route="inventory">Inventory</a>
+      <a href="#/reports" data-route="reports">Reports</a>
+      <a href="#/settings" data-route="settings">Settings</a>
+    </nav>
+    <div class="top-tools">
+      <button class="btn small" id="installBtn" data-action="install-app" hidden>Install app</button>
+      <button class="btn small ghost on-bar" id="themeBtn" data-action="toggle-theme">Dark mode</button>
+    </div>
+  </header>
+  <div id="banner"></div>
+  <main id="view" tabindex="-1"><p class="loading">Loading</p></main>
+  <dialog id="modal"></dialog>
+  <div id="toasts" aria-live="polite"></div>
+  <noscript><p class="loading">Niogen Tracker needs JavaScript turned on.</p></noscript>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
