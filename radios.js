@@ -1,8 +1,8 @@
 // Radios screen: cards grouped by status.
 
-import { S, urlFor } from '../state.js';
-import { loadRadioSummaries, createRadio, STATUSES, radioName, db } from '../db.js';
-import { esc, money, openModal, formData } from '../ui.js';
+import { S, urlFor } from './state.js';
+import { loadRadioSummaries, createRadio, STATUSES, radioName, db } from './db.js';
+import { esc, money, openModal, formData } from './ui.js';
 
 export const RADIO_ART = `<svg class="radio-art" viewBox="0 0 120 90" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="10" y="22" width="100" height="60" rx="11"/><circle cx="38" cy="52" r="17"/><circle cx="38" cy="52" r="5"/><path d="M68 38h30M68 48h30M68 58h30M68 68h30"/><path d="M32 22 25 8M88 22l8-14"/></svg>`;
 

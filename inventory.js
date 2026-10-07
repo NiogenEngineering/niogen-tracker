@@ -1,9 +1,9 @@
 // Inventory screen: parts list, add/edit, receive stock, adjust counts, history.
 
-import { S } from '../state.js';
-import * as D from '../db.js';
-import { num, round2 } from '../pricing.js';
-import { esc, money, unitMoney, fmtQty, fmtDate, formData, openModal, confirmChoice, toast, $ } from '../ui.js';
+import { S } from './state.js';
+import * as D from './db.js';
+import { num, round2 } from './pricing.js';
+import { esc, money, unitMoney, fmtQty, fmtDate, formData, openModal, confirmChoice, toast, $ } from './ui.js';
 
 const COLUMNS = [
   { key: 'partNumber', label: 'Part number' },

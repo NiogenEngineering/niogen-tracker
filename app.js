@@ -5,11 +5,11 @@ import { S, revokeUrls } from './state.js';
 import { mirrorNow, folderSupported, folderStatus, reconnectFolder, downloadBackup } from './backup.js';
 import { applyTheme, resolveTheme } from './theme.js';
 import { $, $$, esc, toast } from './ui.js';
-import * as Radios from './views/radios.js';
-import * as Radio from './views/radio.js';
-import * as Inventory from './views/inventory.js';
-import * as Reports from './views/reports.js';
-import * as Settings from './views/settings.js';
+import * as Radios from './radios.js';
+import * as Radio from './radio.js';
+import * as Inventory from './inventory.js';
+import * as Reports from './reports.js';
+import * as Settings from './settings.js';
 
 const views = { radios: Radios, radio: Radio, inventory: Inventory, reports: Reports, settings: Settings };
 const BACKUP_NAG_DAYS = 14;
@@ -166,6 +166,7 @@ async function registerWorker() {
 /* ---------- start ---------- */
 
 async function boot() {
+  window.__niogenStarted = true;
   try {
     await initDb();
   } catch (e) {

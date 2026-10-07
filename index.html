@@ -7,8 +7,8 @@
   <meta name="theme-color" content="#17405f">
   <meta name="description" content="Inventory and restoration cost tracker for vintage radios.">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-192.png">
   <script>
     // Apply the saved theme before first paint so there is no light flash in dark mode.
     try {
@@ -17,7 +17,7 @@
       document.documentElement.dataset.theme = dark ? 'dark' : 'light';
     } catch (e) {}
   </script>
-  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <a class="skip" href="#view">Skip to content</a>
@@ -47,6 +47,18 @@
   <dialog id="modal"></dialog>
   <div id="toasts" aria-live="polite"></div>
   <noscript><p class="loading">Niogen Tracker needs JavaScript turned on.</p></noscript>
-  <script type="module" src="js/app.js"></script>
+  <script type="module" src="app.js"></script>
+  <script>
+    // If the app has not started after a moment, say why instead of leaving "Loading" on screen.
+    setTimeout(function () {
+      if (window.__niogenStarted) return;
+      var v = document.getElementById('view');
+      var local = location.protocol === 'file:';
+      v.innerHTML = '<div class="panel"><h1>The app could not start</h1>' + (local
+        ? '<p>This page was opened from a file on your computer. Browsers block apps like this from running that way.</p><p>Open Niogen Tracker from its web address instead, for example <strong>https://YOURNAME.github.io/niogen-tracker/</strong>. Your data is saved under that address.</p>'
+        : '<p>The app files did not load. Most often a folder (<strong>js</strong>, <strong>css</strong>, <strong>fonts</strong>, or <strong>icons</strong>) was left out of the upload, or the site is still publishing.</p><p>Check that your repository shows <strong>index.html</strong>, <strong>js</strong>, and <strong>css</strong> at its top level, wait a minute, then reload with Ctrl+Shift+R.</p>')
+        + '</div>';
+    }, 2500);
+  </script>
 </body>
 </html>

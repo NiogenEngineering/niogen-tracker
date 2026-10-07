@@ -2,7 +2,7 @@
 // Every stock-changing action runs inside one transaction, so stock counts and
 // radio costs can never drift apart if something fails halfway.
 
-import Dexie from './vendor/dexie.min.mjs';
+import Dexie from './dexie.min.mjs';
 import { round2, num, computeCosts } from './pricing.js';
 
 export const STATUSES = [

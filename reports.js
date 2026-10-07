@@ -1,8 +1,8 @@
 // Reports screen: total cost and profit, per radio and overall.
 
-import { loadRadioSummaries, radioName, STATUSES } from '../db.js';
-import { actualProfit, round2 } from '../pricing.js';
-import { esc, money, fmtDate } from '../ui.js';
+import { loadRadioSummaries, radioName, STATUSES } from './db.js';
+import { actualProfit, round2 } from './pricing.js';
+import { esc, money, fmtDate } from './ui.js';
 
 export async function render(view) {
   const rows = await loadRadioSummaries();

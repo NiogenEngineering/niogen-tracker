@@ -1,12 +1,12 @@
 // Asset page: one radio's details, photos, parts list, costs, and selling prices.
 
-import { S, urlFor } from '../state.js';
-import * as D from '../db.js';
-import { computeCosts, suggestedPrice, profitAt, sellerFee, actualProfit, num } from '../pricing.js';
+import { S, urlFor } from './state.js';
+import * as D from './db.js';
+import { computeCosts, suggestedPrice, profitAt, sellerFee, actualProfit, num } from './pricing.js';
 import {
   esc, money, unitMoney, fmtQty, fmtPct, fmtDate, dateInputValue, fromDateInput, formData,
   openModal, confirmChoice, toast, $, $$,
-} from '../ui.js';
+} from './ui.js';
 import { RADIO_ART } from './radios.js';
 
 let B = null;      // loaded data for this radio

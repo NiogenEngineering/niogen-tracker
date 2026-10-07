@@ -1,11 +1,11 @@
 // Settings screen: defaults, selling sites, appearance, backups, storage.
 
-import { S } from '../state.js';
-import * as D from '../db.js';
-import * as K from '../backup.js';
-import { num } from '../pricing.js';
-import { esc, money, fmtDate, formData, openModal, confirmChoice, toast, $ } from '../ui.js';
-import { applyTheme } from '../theme.js';
+import { S } from './state.js';
+import * as D from './db.js';
+import * as K from './backup.js';
+import { num } from './pricing.js';
+import { esc, money, fmtDate, formData, openModal, confirmChoice, toast, $ } from './ui.js';
+import { applyTheme } from './theme.js';
 
 let persisted = null;
 
