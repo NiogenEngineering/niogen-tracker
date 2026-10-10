@@ -1,5 +1,7 @@
 # Niogen Tracker
 
+Version 2: component lists with replacement tracking, parts on order, and a new ledger-style look.
+
 Inventory and restoration cost tracker for vintage radios. Runs in the browser, works offline,
 and keeps all data on your computer. Nothing is uploaded anywhere.
 

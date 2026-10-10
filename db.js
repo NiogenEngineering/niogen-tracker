@@ -44,8 +44,29 @@ export class AppError extends Error {
   }
 }
 
-export const db = new Dexie('niogen-tracker');
-db.version(1).stores({
+export const COMP_STATUSES = [
+  { id: 'unchecked', label: 'Not checked' },
+  { id: 'ok', label: 'OK, keeping' },
+  { id: 'replace', label: 'Needs replacing' },
+  { id: 'replaced', label: 'Replaced' },
+];
+export const compStatusLabel = (id) => COMP_STATUSES.find((s) => s.id === id)?.label ?? id;
+
+// Fills in the fields added in version 2 so older data (and older backup files) keep working.
+// A line that already had a part or a cost counts as replaced; a verified free line counts as OK.
+export function normalizeComponent(c) {
+  if (c.status === undefined) c.status = c.partId || num(c.unitCost) > 0 ? 'replaced' : c.verified ? 'ok' : 'unchecked';
+  if (c.note === undefined) c.note = '';
+  return c;
+}
+export function normalizePart(p) {
+  if (p.onOrderQty === undefined) p.onOrderQty = 0;
+  if (p.onOrderNote === undefined) p.onOrderNote = '';
+  if (p.onOrderAt === undefined) p.onOrderAt = null;
+  return p;
+}
+
+const SCHEMA = {
   parts: '++id, &key, partNumber',
   radios: '++id, status, updatedAt',
   components: '++id, radioId, partId',
@@ -56,6 +77,12 @@ db.version(1).stores({
   sellers: '++id, order',
   listings: '++id, &[radioId+sellerId], radioId, sellerId',
   settings: 'key',
+};
+export const db = new Dexie('niogen-tracker');
+db.version(1).stores(SCHEMA);
+db.version(2).stores(SCHEMA).upgrade(async (tx) => {
+  await tx.table('components').toCollection().modify((c) => { normalizeComponent(c); });
+  await tx.table('parts').toCollection().modify((p) => { normalizePart(p); });
 });
 
 /* ---------- change notification (drives the auto-backup) ---------- */
@@ -143,12 +170,18 @@ export async function addPart(input) {
   const clean = cleanPartInput(input);
   const qty = num(input.qty);
   if (qty < 0) throw new AppError('Quantity cannot be negative.', 'invalid');
+  const ordered = num(input.onOrderQty);
+  if (ordered < 0) throw new AppError('Quantity on order cannot be negative.', 'invalid');
   return db.transaction('rw', db.parts, db.stock, async () => {
     const dup = await findPartByNumber(clean.partNumber);
     if (dup) throw new AppError(dupMessage(dup), 'duplicate', dup);
     const now = Date.now();
-    const id = await db.parts.add({ ...clean, key: keyOf(clean.partNumber), qty: r4(qty), createdAt: now, updatedAt: now });
+    const id = await db.parts.add({
+      ...clean, key: keyOf(clean.partNumber), qty: r4(qty), createdAt: now, updatedAt: now,
+      onOrderQty: r4(ordered), onOrderNote: ordered > 0 ? trim(input.onOrderNote) : '', onOrderAt: ordered > 0 ? now : null,
+    });
     if (qty > 0) await db.stock.add({ partId: id, delta: r4(qty), reason: 'initial', note: 'Added to inventory', unitCost: clean.unitCost, date: now });
+    if (ordered > 0) await db.stock.add({ partId: id, delta: 0, reason: 'ordered', note: orderNote(ordered, input.onOrderNote), date: now });
     return id;
   });
 }
@@ -173,9 +206,31 @@ export async function receiveStock(partId, qty, unitCost, note = '') {
     if (!part) throw new AppError('That part no longer exists.', 'missing');
     const newQty = r4(part.qty + qty);
     const newCost = part.qty > 0 ? r6((part.qty * part.unitCost + qty * unitCost) / newQty) : r6(unitCost);
-    await db.parts.update(partId, { qty: newQty, unitCost: newCost, updatedAt: Date.now() });
+    const stillOn = Math.max(0, r4((part.onOrderQty || 0) - qty)); // what arrived is no longer "on order"
+    await db.parts.update(partId, {
+      qty: newQty, unitCost: newCost, updatedAt: Date.now(),
+      onOrderQty: stillOn, onOrderNote: stillOn > 0 ? part.onOrderNote : '', onOrderAt: stillOn > 0 ? part.onOrderAt : null,
+    });
     await db.stock.add({ partId, delta: r4(qty), reason: 'received', note: trim(note), unitCost: r6(unitCost), date: Date.now() });
-    return { qty: newQty, unitCost: newCost };
+    return { qty: newQty, unitCost: newCost, onOrderQty: stillOn };
+  });
+}
+
+const orderNote = (qty, note) => `${r4(qty)} on order${trim(note) ? `: ${trim(note)}` : ''}`;
+
+// Parts that are bought and in shipping. Receiving stock reduces this automatically.
+export async function setOnOrder(partId, qty, note = '') {
+  qty = num(qty);
+  if (qty < 0) throw new AppError('Quantity on order cannot be negative.', 'invalid');
+  return db.transaction('rw', db.parts, db.stock, async () => {
+    const part = await db.parts.get(partId);
+    if (!part) throw new AppError('That part no longer exists.', 'missing');
+    const now = Date.now();
+    await db.parts.update(partId, {
+      onOrderQty: r4(qty), onOrderNote: qty > 0 ? trim(note) : '',
+      onOrderAt: qty > 0 ? (part.onOrderQty > 0 ? part.onOrderAt ?? now : now) : null, updatedAt: now,
+    });
+    await db.stock.add({ partId, delta: 0, reason: 'ordered', note: qty > 0 ? orderNote(qty, note) : 'Order cleared', date: now });
   });
 }
 
@@ -330,7 +385,8 @@ export async function loadRadioSummaries() {
         laborRate: radio.laborRate, taxPct: radio.taxPct,
       });
       const pics = (gp.get(radio.id) ?? []).sort((a, b) => a.order - b.order);
-      return { radio, costs, cover: pics[0] ?? null, photoCount: pics.length, lineCount: (gc.get(radio.id) ?? []).length };
+      const lines = gc.get(radio.id) ?? [];
+      return { radio, costs, cover: pics[0] ?? null, photoCount: pics.length, lineCount: lines.length, needCount: lines.filter((c) => c.status === 'replace').length };
     })
     .sort((a, b) => b.radio.updatedAt - a.radio.updatedAt);
 }
@@ -338,8 +394,30 @@ export async function loadRadioSummaries() {
 /* ---------- components (the parts list on a radio) ---------- */
 
 const stockError = (part, needed) =>
-  new AppError(`Only ${part.qty} of ${part.partNumber} on hand, and this line needs ${needed}. Receive more stock or correct the count first.`, 'stock', { part, needed });
+  new AppError(
+    `Only ${part.qty} of ${part.partNumber} on hand, and this line needs ${needed}.${part.onOrderQty > 0 ? ` ${part.onOrderQty} ${part.onOrderQty === 1 ? 'is' : 'are'} on order. Receive them first.` : ' Receive more stock or correct the count first.'}`,
+    'stock', { part, needed },
+  );
 
+// Which category a reference letter usually means: C = capacitor, R = resistor, V = tube, and so on.
+export function inferCategory(ref) {
+  const m = trim(ref).toUpperCase().match(/^[A-Z]+/);
+  const p = m ? m[0] : '';
+  if (p === 'C') return 'Capacitor';
+  if (p === 'R') return 'Resistor';
+  if (p === 'V' || p === 'VT') return 'Tube';
+  if (p === 'L') return 'Coil';
+  if (p === 'T') return 'Transformer';
+  if (p === 'S' || p === 'SW') return 'Switch';
+  return 'Other';
+}
+
+const validStatus = (st) => {
+  if (!COMP_STATUSES.some((x) => x.id === st)) throw new AppError('Choose a valid status.', 'invalid');
+  return st;
+};
+
+// A part used on the radio: from inventory (stock goes down) or typed in with a cost. Counts as Replaced.
 export async function addComponent(radioId, input) {
   const qty = num(input.qty || 1);
   if (!(qty > 0)) throw new AppError('Enter a quantity greater than zero.', 'invalid');
@@ -358,13 +436,31 @@ export async function addComponent(radioId, input) {
     }
     if (!description) throw new AppError('Enter a description.', 'invalid');
     if (unitCost < 0) throw new AppError('Cost cannot be negative.', 'invalid');
+    const status = validStatus(input.status ?? (input.partId || unitCost > 0 ? 'replaced' : 'unchecked'));
     const id = await db.components.add({
-      radioId, partId: input.partId || null, category: trim(input.category) || 'Other', ref: trim(input.ref),
-      description, qty: r4(qty), unitCost: r6(unitCost), verified: !!input.verified, createdAt: now,
+      radioId, partId: input.partId || null, category: trim(input.category) || inferCategory(input.ref), ref: trim(input.ref),
+      description, qty: r4(qty), unitCost: r6(unitCost), status, note: trim(input.note), createdAt: now,
     });
     await db.radios.update(radioId, { updatedAt: now });
     return id;
   });
+}
+
+// A list of the radio's own components, entered in one go. They start as Not checked and cost nothing.
+export async function addComponentsBulk(radioId, category, lines) {
+  const rows = lines
+    .map((l) => ({ ref: trim(l.ref), description: trim(l.description) }))
+    .filter((l) => l.description);
+  if (!rows.length) throw new AppError('Type at least one component.', 'invalid');
+  const now = Date.now();
+  await db.transaction('rw', db.components, db.radios, async () => {
+    await db.components.bulkAdd(rows.map((l, i) => ({
+      radioId, partId: null, category: trim(category) || inferCategory(l.ref), ref: l.ref, description: l.description,
+      qty: 1, unitCost: 0, status: 'unchecked', note: '', createdAt: now + i,
+    })));
+    await db.radios.update(radioId, { updatedAt: now });
+  });
+  return rows.length;
 }
 
 export async function updateComponent(id, input) {
@@ -389,16 +485,68 @@ export async function updateComponent(id, input) {
     }
     const changes = {
       category: trim(input.category ?? comp.category) || 'Other',
-      ref: trim(input.ref ?? comp.ref), description, qty: r4(qty),
-      verified: input.verified === undefined ? comp.verified : !!input.verified,
+      ref: trim(input.ref ?? comp.ref), description, qty: r4(qty), note: trim(input.note ?? comp.note),
     };
-    if (!comp.partId && input.unitCost !== undefined) changes.unitCost = r6(Math.max(0, num(input.unitCost)));
+    if (!comp.partId && comp.status === 'replaced' && input.unitCost !== undefined) changes.unitCost = r6(Math.max(0, num(input.unitCost)));
     await db.components.update(id, changes);
     await db.radios.update(comp.radioId, { updatedAt: now });
   });
 }
 
-export const setVerified = (id, verified) => db.components.update(id, { verified: !!verified });
+// Moves a line between Not checked / OK / Needs replacing. A line with a part used on it must be undone first.
+export async function setStatus(id, status) {
+  validStatus(status);
+  const comp = await db.components.get(id);
+  if (!comp) throw new AppError('That line no longer exists.', 'missing');
+  if (comp.partId) throw new AppError('Undo the replacement first, so the part goes back on the shelf or is marked used up.', 'invalid');
+  if (status === 'replaced') throw new AppError('Use Replace to record what was used.', 'invalid');
+  await db.components.update(id, { status, unitCost: 0 });
+  await db.radios.update(comp.radioId, { updatedAt: Date.now() });
+}
+
+// Record the replacement for a component: a part from inventory (stock goes down) or a typed-in cost.
+export async function replaceComponent(id, input) {
+  return db.transaction('rw', db.components, db.parts, db.stock, db.radios, async () => {
+    const comp = await db.components.get(id);
+    if (!comp) throw new AppError('That line no longer exists.', 'missing');
+    if (comp.partId) throw new AppError('This line already has a replacement part. Undo it first.', 'invalid');
+    const qty = num(input.qty ?? comp.qty);
+    if (!(qty > 0)) throw new AppError('Enter a quantity greater than zero.', 'invalid');
+    const now = Date.now();
+    let unitCost = num(input.unitCost);
+    if (input.partId) {
+      const part = await db.parts.get(input.partId);
+      if (!part) throw new AppError('That part no longer exists.', 'missing');
+      if (part.qty < qty - 1e-9) throw stockError(part, qty);
+      await db.parts.update(part.id, { qty: r4(part.qty - qty), updatedAt: now });
+      await db.stock.add({ partId: part.id, radioId: comp.radioId, delta: -r4(qty), reason: 'issued', note: `Replacing ${comp.ref || comp.description}`, unitCost: part.unitCost, date: now });
+      unitCost = part.unitCost;
+    }
+    if (unitCost < 0) throw new AppError('Cost cannot be negative.', 'invalid');
+    await db.components.update(id, { partId: input.partId || null, qty: r4(qty), unitCost: r6(unitCost), status: 'replaced' });
+    await db.radios.update(comp.radioId, { updatedAt: now });
+  });
+}
+
+// Takes a replacement back: the part returns to the shelf (or is logged as used up) and the line goes back to Needs replacing.
+export async function undoReplacement(id, { returnToStock }) {
+  return db.transaction('rw', db.components, db.parts, db.stock, db.radios, async () => {
+    const comp = await db.components.get(id);
+    if (!comp) return;
+    const now = Date.now();
+    if (comp.partId && returnToStock) {
+      const part = await db.parts.get(comp.partId);
+      if (part) {
+        await db.parts.update(part.id, { qty: r4(part.qty + comp.qty), updatedAt: now });
+        await db.stock.add({ partId: part.id, radioId: comp.radioId, delta: r4(comp.qty), reason: 'returned', note: 'Replacement undone', date: now });
+      }
+    } else if (comp.partId) {
+      await db.stock.add({ partId: comp.partId, radioId: comp.radioId, delta: 0, reason: 'consumed', note: 'Replacement undone, part not returned', date: now });
+    }
+    await db.components.update(id, { partId: null, unitCost: 0, status: 'replace' });
+    await db.radios.update(comp.radioId, { updatedAt: now });
+  });
+}
 
 export async function removeComponent(id, { returnToStock }) {
   return db.transaction('rw', db.components, db.parts, db.stock, db.radios, async () => {
@@ -417,6 +565,14 @@ export async function removeComponent(id, { returnToStock }) {
     await db.components.delete(id);
     await db.radios.update(comp.radioId, { updatedAt: now });
   });
+}
+
+// Every line across all radios that is waiting to be replaced.
+export async function listReplacements() {
+  const lines = await db.components.filter((c) => c.status === 'replace').toArray();
+  const radios = await db.radios.bulkGet([...new Set(lines.map((l) => l.radioId))]);
+  const byId = new Map(radios.filter(Boolean).map((r) => [r.id, r]));
+  return lines.map((l) => ({ ...l, radio: byId.get(l.radioId) })).filter((l) => l.radio);
 }
 
 /* ---------- auxiliary costs ---------- */

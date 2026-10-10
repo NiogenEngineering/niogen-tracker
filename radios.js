@@ -6,7 +6,7 @@ import { esc, money, openModal, formData } from './ui.js';
 
 export const RADIO_ART = `<svg class="radio-art" viewBox="0 0 120 90" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="10" y="22" width="100" height="60" rx="11"/><circle cx="38" cy="52" r="17"/><circle cx="38" cy="52" r="5"/><path d="M68 38h30M68 48h30M68 58h30M68 68h30"/><path d="M32 22 25 8M88 22l8-14"/></svg>`;
 
-function card({ radio, costs, cover }) {
+function card({ radio, costs, cover, needCount }) {
   const sub = [radio.year, radio.chassis && `Chassis ${radio.chassis}`].filter(Boolean).join(', ');
   const status = STATUSES.find((s) => s.id === radio.status);
   return `
@@ -15,6 +15,7 @@ function card({ radio, costs, cover }) {
       <div class="card-body">
         <h3>${esc(radioName(radio))}</h3>
         <p class="muted">${esc(sub) || '&nbsp;'}</p>
+        ${needCount ? `<p class="need-line">${needCount} ${needCount === 1 ? 'component needs' : 'components need'} replacing</p>` : ''}
         <div class="card-foot">
           <span class="chip s-${radio.status}">${esc(status?.label)}</span>
           <span class="cost" title="Total cost so far">${money(costs.total)}</span>

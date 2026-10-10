@@ -9,6 +9,7 @@ const COLUMNS = [
   { key: 'partNumber', label: 'Part number' },
   { key: 'description', label: 'Description' },
   { key: 'qty', label: 'On hand', num: true },
+  { key: 'onOrderQty', label: 'On order' },
   { key: 'bin', label: 'Bin' },
   { key: 'vendor', label: 'Vendor' },
   { key: 'unitCost', label: 'Unit cost', num: true },
@@ -23,6 +24,7 @@ export async function render(view) {
     <div class="page-head">
       <h1>Inventory</h1>
       <div class="head-tools">
+        <label class="check inline"><input type="checkbox" id="invOrdered" ${S.inv.ordered ? 'checked' : ''}><span>On order only</span></label>
         <input type="search" id="invSearch" class="search" placeholder="Search parts" value="${esc(S.inv.q)}" aria-label="Search parts" autocomplete="off">
         <button class="btn primary" data-action="add-part">Add part</button>
       </div>
@@ -40,6 +42,7 @@ export async function render(view) {
       <p class="table-foot" id="invFoot"></p>
     </div>`;
   $('#invSearch').addEventListener('input', (e) => { S.inv.q = e.target.value; paintRows(); });
+  $('#invOrdered').addEventListener('change', (e) => { S.inv.ordered = e.target.checked; paintRows(); });
   paintRows();
 }
 
@@ -47,23 +50,26 @@ function paintRows() {
   const q = S.inv.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const { sort, dir } = S.inv;
   const list = parts
-    .filter((p) => q.every((t) => [p.partNumber, p.description, p.bin, p.vendor].join(' ').toLowerCase().includes(t)))
+    .filter((p) => !S.inv.ordered || p.onOrderQty > 0)
+    .filter((p) => q.every((t) => [p.partNumber, p.description, p.bin, p.vendor, p.onOrderNote].join(' ').toLowerCase().includes(t)))
     .sort((a, b) => (typeof a[sort] === 'number' ? a[sort] - b[sort] : natural(a[sort], b[sort])) * dir || natural(a.partNumber, b.partNumber));
   const body = $('#invBody');
   if (!parts.length) {
-    body.innerHTML = `<tr><td colspan="7" class="empty-cell">No parts yet. Add a part to start your inventory.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="8" class="empty-cell">No parts yet. Add a part to start your inventory.</td></tr>`;
   } else if (!list.length) {
-    body.innerHTML = `<tr><td colspan="7" class="empty-cell">No parts match your search.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="8" class="empty-cell">No parts match your search.</td></tr>`;
   } else {
     body.innerHTML = list.map((p) => `
       <tr>
         <td class="mono">${esc(p.partNumber)}</td>
         <td>${esc(p.description)}</td>
         <td class="num ${p.qty <= 0 ? 'zero' : ''}">${fmtQty(p.qty)}</td>
+        <td>${p.onOrderQty > 0 ? `<span class="tag order">${fmtQty(p.onOrderQty)} ordered</span>${p.onOrderNote ? `<div class="sub">${esc(p.onOrderNote)}</div>` : ''}` : ''}</td>
         <td>${esc(p.bin)}</td>
         <td>${esc(p.vendor)}</td>
         <td class="num">${unitMoney(p.unitCost)}</td>
         <td class="row-actions">
+          <button class="btn small" data-action="order" data-id="${p.id}">Order</button>
           <button class="btn small" data-action="receive" data-id="${p.id}">Receive</button>
           <button class="btn small ghost" data-action="adjust" data-id="${p.id}">Adjust</button>
           <button class="btn small ghost" data-action="history" data-id="${p.id}">History</button>
@@ -71,7 +77,8 @@ function paintRows() {
         </td>
       </tr>`).join('');
   }
-  $('#invFoot').textContent = parts.length ? `${list.length} of ${parts.length} part${parts.length === 1 ? '' : 's'} shown` : '';
+  const ordered = parts.filter((p) => p.onOrderQty > 0).length;
+  $('#invFoot').textContent = parts.length ? `${list.length} of ${parts.length} part${parts.length === 1 ? '' : 's'} shown. ${ordered} on order.` : '';
 }
 
 /* ---------- add / edit part ---------- */
@@ -111,7 +118,11 @@ async function partDialog(part = null) {
         <label class="field"><span>Vendor</span><input name="vendor" list="vendorList" value="${esc(part?.vendor ?? '')}" autocomplete="off"></label>
       </div>
       <datalist id="vendorList">${vendors.map((v) => `<option value="${esc(v)}">`).join('')}</datalist>
-      ${editing ? `<p class="hint">To change the quantity, use Receive or Adjust so the history stays accurate. A new unit cost applies to future use only. Radios keep the cost they were issued at.</p>` : ''}`,
+      ${editing ? '' : `<div class="grid2">
+        <label class="field"><span>Already on order (qty)</span><input name="onOrderQty" type="number" min="0" step="any" placeholder="0"></label>
+        <label class="field"><span>Order note</span><input name="onOrderNote" placeholder="Order number, expected date" autocomplete="off"></label>
+      </div>`}
+      ${editing ? `<p class="hint">To change the quantity, use Receive or Adjust so the history stays accurate. Use Order for parts that are on the way. A new unit cost applies to future use only. Radios keep the cost they were issued at.</p>` : ''}`,
     onMount: ({ form }) => {
       const pn = form.elements.partNumber, msg = $('#pnMsg', form);
       const check = async () => {
@@ -170,9 +181,9 @@ async function receiveDialog(part) {
     submitButtons: [{ label: 'Add to stock', value: 'ok' }],
     body: `
       <p class="part-line"><strong>${esc(part.partNumber)}</strong> ${esc(part.description)}</p>
-      <p class="hint">On hand: ${fmtQty(part.qty)}. Current average cost: ${unitMoney(part.unitCost)} each.</p>
+      <p class="hint">On hand: ${fmtQty(part.qty)}. Current average cost: ${unitMoney(part.unitCost)} each.${part.onOrderQty > 0 ? ` ${fmtQty(part.onOrderQty)} on order. What you receive comes off the on-order amount.` : ''}</p>
       <div class="grid2">
-        <label class="field"><span>Quantity received</span><input name="qty" type="number" min="0" step="any" data-autofocus></label>
+        <label class="field"><span>Quantity received</span><input name="qty" type="number" min="0" step="any" value="${part.onOrderQty > 0 ? part.onOrderQty : ''}" data-autofocus></label>
         <label class="field"><span id="costLabel">Price per piece ($)</span><input name="cost" type="number" min="0" step="any"></label>
       </div>
       <fieldset class="seg-field">
@@ -180,7 +191,7 @@ async function receiveDialog(part) {
         <label class="seg"><input type="radio" name="mode" value="each" checked><span>Per piece</span></label>
         <label class="seg"><input type="radio" name="mode" value="total"><span>Total for the batch</span></label>
       </fieldset>
-      <label class="field"><span>Note (optional)</span><input name="note" placeholder="Order number, vendor, case or kit"></label>
+      <label class="field"><span>Note (optional)</span><input name="note" value="${esc(part.onOrderNote ?? '')}" placeholder="Order number, vendor, case or kit"></label>
       <p class="preview" id="preview" aria-live="polite"></p>`,
     onMount: ({ form }) => {
       const preview = $('#preview', form), label = $('#costLabel', form);
@@ -199,6 +210,7 @@ async function receiveDialog(part) {
         preview.textContent = `After this: ${fmtQty(newQty)} on hand at ${unitMoney(avg)} each (average). This batch is ${unitMoney(unit)} each.`;
       };
       form.addEventListener('input', update);
+      update();
     },
     onSubmit: async (form) => {
       const d = formData(form);
@@ -209,6 +221,33 @@ async function receiveDialog(part) {
     },
   });
   if (ok === 'ok') { toast(`Received into ${part.partNumber}`); await S.render(); }
+}
+
+/* ---------- on order ---------- */
+
+async function orderDialog(part) {
+  const result = await openModal({
+    title: 'Parts on order',
+    submitButtons: [
+      { label: 'Save order', value: 'ok' },
+      ...(part.onOrderQty > 0 ? [{ label: 'Clear order', value: 'clear', kind: 'ghost' }] : []),
+    ],
+    body: `
+      <p class="part-line"><strong>${esc(part.partNumber)}</strong> ${esc(part.description)}</p>
+      <p class="hint">On hand: ${fmtQty(part.qty)}. Use this for parts you have already bought that are still shipping. When they arrive, use Receive and the on-order amount drops by itself.</p>
+      <div class="grid2">
+        <label class="field"><span>Quantity on order</span><input name="qty" type="number" min="0" step="any" value="${part.onOrderQty > 0 ? part.onOrderQty : ''}" data-autofocus></label>
+        <label class="field"><span>Note</span><input name="note" value="${esc(part.onOrderNote ?? '')}" placeholder="Order number, vendor, arrives Friday" autocomplete="off"></label>
+      </div>`,
+    onSubmit: async (form, api, sv) => {
+      const d = formData(form);
+      if (sv === 'clear' || d.qty === '') { await D.setOnOrder(part.id, 0); return 'cleared'; }
+      await D.setOnOrder(part.id, d.qty, d.note);
+      return 'ok';
+    },
+  });
+  if (result === 'ok') { toast(`${part.partNumber} marked on order`); await S.render(); }
+  if (result === 'cleared') { toast('Order cleared'); await S.render(); }
 }
 
 /* ---------- adjust count ---------- */
@@ -248,7 +287,7 @@ async function adjustDialog(part) {
 
 const REASONS = {
   initial: 'Added to inventory', received: 'Received', issued: 'Used on a radio',
-  returned: 'Returned to stock', adjusted: 'Adjusted', consumed: 'Used up',
+  returned: 'Returned to stock', adjusted: 'Adjusted', consumed: 'Used up', ordered: 'On order',
 };
 
 async function historyDialog(part) {
@@ -260,7 +299,7 @@ async function historyDialog(part) {
           <thead><tr><th>Date</th><th class="num">Change</th><th>What happened</th><th>Radio</th><th>Note</th></tr></thead>
           <tbody>${rows.map((r) => `<tr>
             <td>${fmtDate(r.date)}</td>
-            <td class="num ${r.delta < 0 ? 'neg' : r.delta > 0 ? 'pos' : ''}">${r.delta > 0 ? '+' : ''}${fmtQty(r.delta)}</td>
+            <td class="num ${r.delta < 0 ? 'neg' : r.delta > 0 ? 'pos' : ''}">${r.delta === 0 ? '' : `${r.delta > 0 ? '+' : ''}${fmtQty(r.delta)}`}</td>
             <td>${esc(REASONS[r.reason] ?? r.reason)}</td>
             <td>${esc(r.radioName)}</td>
             <td>${esc(r.note ?? '')}${r.reason === 'received' && r.unitCost != null ? ` (${unitMoney(r.unitCost)} each)` : ''}</td>
@@ -274,6 +313,7 @@ const byId = (el) => parts.find((p) => p.id === Number(el.dataset.id));
 export const actions = {
   'add-part': () => partDialog(),
   'edit-part': (el) => partDialog(byId(el)),
+  order: (el) => orderDialog(byId(el)),
   receive: (el) => receiveDialog(byId(el)),
   adjust: (el) => adjustDialog(byId(el)),
   history: (el) => historyDialog(byId(el)),

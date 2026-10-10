@@ -1,12 +1,11 @@
 // Niogen Tracker service worker: keeps the app working offline.
-// Files are served from the cache first and refreshed in the background, so a
-// change you upload shows up the second time the app opens. Bump VERSION when
-// you add or rename files so the new list is cached right away.
-const VERSION = 'v1';
+// Files are served from the saved copy first and refreshed in the background, so a
+// change you upload shows up the second time the app opens. Bump VERSION when you
+// add or rename files so the new list is saved right away.
+const VERSION = 'v2';
 const CACHE = `niogen-${VERSION}`;
 const FILES = [
-  './',
-  'index.html',
+  './', 'index.html',
   'manifest.webmanifest',
   'style.css',
   'app.js',
@@ -22,11 +21,6 @@ const FILES = [
   'reports.js',
   'settings.js',
   'dexie.min.mjs',
-  'bevan-latin-400-normal.woff2',
-  'barlow-latin-400-normal.woff2',
-  'barlow-latin-500-normal.woff2',
-  'barlow-latin-600-normal.woff2',
-  'ibm-plex-mono-latin-500-normal.woff2',
   'favicon.svg',
   'icon-192.png',
   'icon-512.png',
@@ -34,7 +28,12 @@ const FILES = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  // cache: 'reload' skips the browser's own saved copies, so an update never mixes old and new files
+  e.waitUntil(
+    caches.open(CACHE)
+      .then((c) => c.addAll(FILES.map((f) => new Request(f, { cache: 'reload' }))))
+      .then(() => self.skipWaiting()),
+  );
 });
 
 self.addEventListener('activate', (e) => {
@@ -51,7 +50,7 @@ self.addEventListener('fetch', (e) => {
   e.respondWith((async () => {
     const cache = await caches.open(CACHE);
     const hit = await cache.match(req, { ignoreSearch: true });
-    const fresh = fetch(req).then((res) => {
+    const fresh = fetch(req, { cache: 'no-cache' }).then((res) => {
       if (res.ok) cache.put(req, res.clone());
       return res;
     }).catch(() => null);

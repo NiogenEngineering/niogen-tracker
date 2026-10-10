@@ -4,8 +4,8 @@ export const S = {
   settings: null,          // loaded on every render
   sellers: [],             // all selling sites, loaded on every render
   radioFilter: 'all',      // status tab on the Radios screen
-  inv: { q: '', sort: 'partNumber', dir: 1 },
-  comp: { filter: '' },    // parts filter on the asset page
+  inv: { q: '', sort: 'partNumber', dir: 1, ordered: false },
+  comp: { filter: '', status: 'all' }, // component filters on the asset page
   urls: [],                // object URLs to release when the screen changes
   render: async () => {},  // set by app.js: re-draw the current screen
 };

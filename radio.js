@@ -204,9 +204,9 @@ async function openPhoto(index) {
       { label: 'Delete photo', value: 'delete', kind: 'danger' },
     ],
     body: `<div class="lightbox">
-      ${many ? '<button type="button" class="nav prev" data-nav="-1" aria-label="Previous photo">&lsaquo;</button>' : ''}
+      ${many ? '<button type="button" class="lb-nav prev" data-nav="-1" aria-label="Previous photo">&lsaquo;</button>' : ''}
       <img src="${url}" alt="Photo ${index + 1} of ${esc(D.radioName(B.radio))}">
-      ${many ? '<button type="button" class="nav next" data-nav="1" aria-label="Next photo">&rsaquo;</button>' : ''}
+      ${many ? '<button type="button" class="lb-nav next" data-nav="1" aria-label="Next photo">&rsaquo;</button>' : ''}
     </div>`,
     onMount: (api) => {
       api.form.querySelectorAll('[data-nav]').forEach((b) => b.addEventListener('click', () => api.close(`nav:${b.dataset.nav}`)));
@@ -227,12 +227,17 @@ async function openPhoto(index) {
   }
 }
 
-/* ---------- parts list ---------- */
+/* ---------- components ---------- */
+
+const matchesFilter = (c) => {
+  if (S.comp.status !== 'all' && c.status !== S.comp.status) return false;
+  const f = S.comp.filter.trim().toLowerCase();
+  if (!f) return true;
+  return [c.category, c.ref, c.description, c.note, c.part?.partNumber, D.compStatusLabel(c.status)].join(' ').toLowerCase().includes(f);
+};
 
 function groupedComponents() {
-  const f = S.comp.filter.trim().toLowerCase();
-  let list = [...B.components];
-  if (f) list = list.filter((c) => [c.category, c.ref, c.description, c.part?.partNumber].join(' ').toLowerCase().includes(f));
+  const list = B.components.filter(matchesFilter);
   list.sort((a, b) => natural(a.category, b.category) || natural(a.ref, b.ref) || a.id - b.id);
   const groups = new Map();
   for (const c of list) { if (!groups.has(c.category)) groups.set(c.category, []); groups.get(c.category).push(c); }
@@ -240,25 +245,30 @@ function groupedComponents() {
 }
 
 function componentRows() {
-  const groups = groupedComponents();
   if (!B.components.length) {
-    return `<tr><td colspan="8" class="empty-cell">No parts listed yet. Use Add item to record each capacitor, resistor, and tube as you check it.</td></tr>`;
+    return `<tr><td colspan="8" class="empty-cell">No components listed yet. Use Add components to type in this radio's tubes, capacitors, resistors, and the rest, one per line.</td></tr>`;
   }
+  const groups = groupedComponents();
   if (!groups.size) return `<tr><td colspan="8" class="empty-cell">Nothing matches that filter.</td></tr>`;
   let html = '';
   for (const [cat, items] of groups) {
+    const need = items.filter((c) => c.status === 'replace').length;
     const subtotal = items.reduce((t, c) => t + num(c.qty) * num(c.unitCost), 0);
-    html += `<tr class="cat-row"><th colspan="6" scope="colgroup">${esc(cat)} <span class="count">${items.length}</span></th><td class="num">${money(subtotal)}</td><td></td></tr>`;
+    html += `<tr class="cat-row"><th colspan="6" scope="colgroup">${esc(cat)} <span class="count">${items.length}</span>${need ? ` <span class="need-tag">${need} ${need === 1 ? 'needs' : 'need'} replacing</span>` : ''}</th><td class="num">${subtotal > 0 ? money(subtotal) : ''}</td><td></td></tr>`;
     for (const c of items) {
-      html += `<tr>
-        <td class="chk"><input type="checkbox" data-change="verify" data-id="${c.id}" ${c.verified ? 'checked' : ''} aria-label="Verified: ${esc(c.ref || c.description)}"></td>
+      const replaced = c.status === 'replaced';
+      html += `<tr class="${c.status === 'replace' ? 'need' : ''}">
         <td class="ref">${esc(c.ref)}</td>
-        <td>${esc(c.description)}</td>
-        <td class="mono">${c.part ? esc(c.part.partNumber) : '<span class="muted">manual</span>'}</td>
+        <td>${esc(c.description)}${c.note ? `<div class="sub">${esc(c.note)}</div>` : ''}</td>
+        <td><select class="row-status cs-${c.status}" data-change="compstatus" data-id="${c.id}" aria-label="Status of ${esc(c.ref || c.description)}">
+          ${D.COMP_STATUSES.map((st) => `<option value="${st.id}" ${st.id === c.status ? 'selected' : ''}>${esc(st.label)}</option>`).join('')}
+        </select></td>
+        <td class="mono">${c.part ? esc(c.part.partNumber) : replaced ? '<span class="muted">Manual cost</span>' : ''}</td>
         <td class="num">${fmtQty(c.qty)}</td>
-        <td class="num">${unitMoney(c.unitCost)}</td>
-        <td class="num">${money(num(c.qty) * num(c.unitCost))}</td>
+        <td class="num">${replaced ? unitMoney(c.unitCost) : ''}</td>
+        <td class="num">${replaced ? money(num(c.qty) * num(c.unitCost)) : ''}</td>
         <td class="row-actions">
+          ${c.partId ? `<button class="btn small" data-action="undo-replace" data-id="${c.id}">Undo</button>` : replaced ? '' : `<button class="btn small" data-action="replace-line" data-id="${c.id}">Replace</button>`}
           <button class="btn small ghost" data-action="edit-line" data-id="${c.id}">Edit</button>
           <button class="btn small ghost danger-text" data-action="remove-line" data-id="${c.id}">Remove</button>
         </td></tr>`;
@@ -268,123 +278,158 @@ function componentRows() {
 }
 
 function paintComponents() {
-  const total = B.components.length, ok = B.components.filter((c) => c.verified).length;
+  const total = B.components.length;
+  const n = (st) => B.components.filter((c) => c.status === st).length;
+  const chips = [{ id: 'all', label: 'All', n: total }, ...D.COMP_STATUSES.map((st) => ({ id: st.id, label: st.label, n: n(st.id) }))];
   $('#componentsPanel').innerHTML = `
     <div class="panel-head">
-      <h2>Parts on this radio</h2>
+      <h2>Components</h2>
       <div class="head-tools">
-        <input type="search" id="compFilter" class="search" placeholder="Filter parts" value="${esc(S.comp.filter)}" aria-label="Filter parts on this radio" autocomplete="off">
-        <button class="btn primary" data-action="add-item">Add item</button>
+        <input type="search" id="compFilter" class="search" placeholder="Filter components" value="${esc(S.comp.filter)}" aria-label="Filter components on this radio" autocomplete="off">
+        <button class="btn primary" data-action="add-components">Add components</button>
+        <button class="btn" data-action="add-part-used">Add part used</button>
       </div>
+    </div>
+    <div class="fchips" role="group" aria-label="Filter by status">
+      ${chips.map((ch) => `<button class="fchip ${S.comp.status === ch.id ? 'on' : ''}" aria-pressed="${S.comp.status === ch.id}" data-action="comp-filter" data-value="${ch.id}">${esc(ch.label)} <span class="count">${ch.n}</span></button>`).join('')}
     </div>
     <div class="table-wrap">
       <table class="data parts-table">
-        <thead><tr><th class="chk"><span class="sr-only">Verified</span></th><th>Ref</th><th>Description</th><th>Part number</th><th class="num">Qty</th><th class="num">Each</th><th class="num">Line cost</th><th><span class="sr-only">Actions</span></th></tr></thead>
+        <thead><tr><th>Ref</th><th>Description</th><th>Status</th><th>Replacement</th><th class="num">Qty</th><th class="num">Each</th><th class="num">Line cost</th><th><span class="sr-only">Actions</span></th></tr></thead>
         <tbody id="compBody">${componentRows()}</tbody>
       </table>
     </div>
-    <p class="table-foot">${total ? `${ok} of ${total} line${total === 1 ? '' : 's'} verified correct. Parts subtotal ${money(C.costs.parts)}.` : ''}</p>`;
+    <p class="table-foot">${total ? `${total} component${total === 1 ? '' : 's'}: ${n('replace')} need replacing, ${n('replaced')} replaced, ${n('ok')} OK, ${n('unchecked')} not checked. Parts cost ${money(C.costs.parts)}.` : ''}</p>`;
   $('#compFilter').addEventListener('input', (e) => { S.comp.filter = e.target.value; $('#compBody').innerHTML = componentRows(); });
 }
 
-async function itemDialog(comp = null) {
-  const editing = !!comp;
-  const linked = editing && !!comp.partId;
+/* A part can come from inventory (stock goes down) or be a typed-in cost. Used by two dialogs. */
+const sourceBlock = () => `
+  <fieldset class="seg-field">
+    <legend class="sr-only">Where the part comes from</legend>
+    <label class="seg"><input type="radio" name="source" value="part" checked><span>From inventory</span></label>
+    <label class="seg"><input type="radio" name="source" value="manual"><span>Typed-in cost</span></label>
+  </fieldset>
+  <div id="srcPart">
+    <label class="field"><span>Find a part</span><input type="search" id="partSearch" placeholder="Search part number or description" autocomplete="off"></label>
+    <div id="partList" class="pick-list" role="listbox" aria-label="Inventory parts"></div>
+    <input type="hidden" name="partId" value="">
+  </div>`;
+
+function wireSource(form, parts, { onChoose } = {}) {
+  const list = $('#partList', form), search = $('#partSearch', form), srcPart = $('#srcPart', form), cost = form.elements.unitCost;
+  let selected = null;
+  const draw = () => {
+    const q = search.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const hits = parts.filter((p) => q.every((t) => `${p.partNumber} ${p.description}`.toLowerCase().includes(t)))
+      .sort((a, b) => natural(a.partNumber, b.partNumber)).slice(0, 40);
+    list.innerHTML = hits.length
+      ? hits.map((p) => `<button type="button" class="pick ${selected === p.id ? 'on' : ''}" role="option" aria-selected="${selected === p.id}" data-pid="${p.id}">
+          <span class="mono">${esc(p.partNumber)}</span><span>${esc(p.description)}</span>
+          <span class="stock ${p.qty <= 0 ? 'out' : ''}">${fmtQty(p.qty)} on hand${p.onOrderQty > 0 ? `, ${fmtQty(p.onOrderQty)} on order` : ''}</span></button>`).join('')
+      : `<p class="empty-note">${parts.length ? 'No parts match.' : 'Inventory is empty. Use a typed-in cost, or add parts in Inventory first.'}</p>`;
+  };
+  const choose = (id) => {
+    selected = id;
+    form.elements.partId.value = id ?? '';
+    const p = parts.find((x) => x.id === id) ?? null;
+    cost.value = p ? p.unitCost : '';
+    draw();
+    onChoose?.(p);
+  };
+  const setSource = () => {
+    const manual = form.elements.source.value === 'manual';
+    srcPart.hidden = manual;
+    cost.disabled = !manual;
+    cost.placeholder = manual ? '0.00' : 'From inventory';
+    if (manual) choose(null);
+  };
+  list.addEventListener('click', (e) => { const b = e.target.closest('[data-pid]'); if (b) choose(Number(b.dataset.pid)); });
+  search.addEventListener('input', draw);
+  form.querySelectorAll('[name=source]').forEach((r) => r.addEventListener('change', setSource));
+  draw();
+  return {
+    search, isManual: () => form.elements.source.value === 'manual',
+    refresh(newParts) { parts = newParts; draw(); },
+    reset() { selected = null; form.elements.partId.value = ''; search.value = ''; cost.value = ''; draw(); },
+  };
+}
+
+const costField = (disabled, value = '') => `<label class="field"><span>Cost each ($)</span><input name="unitCost" type="number" min="0" step="any" value="${value}" ${disabled ? 'disabled' : ''} placeholder="${disabled ? 'From inventory' : '0.00'}"></label>`;
+const catList = (cats) => `<datalist id="catList">${cats.map((c) => `<option value="${esc(c)}">`).join('')}</datalist>`;
+
+// Type the radio's own components in a list; they start as Not checked and cost nothing.
+async function bulkDialog() {
+  const cats = await D.listCategories();
+  const parse = (text) => text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => {
+    const m = l.match(/^([^,\t]*)[,\t]\s*(.+)$/);
+    return m ? { ref: m[1].trim(), description: m[2].trim() } : { ref: '', description: l };
+  });
+  const ok = await openModal({
+    title: 'Add components', wide: true, submitButtons: [{ label: 'Add to this radio', value: 'ok' }],
+    body: `
+      <label class="field"><span>Category</span><input name="category" list="catList" placeholder="Leave blank to sort by reference letter" autocomplete="off"></label>
+      ${catList(cats)}
+      <label class="field"><span>Components, one per line</span>
+        <textarea name="lines" rows="9" placeholder="V1, 6BE6 converter tube&#10;V2, 6BA6 IF amplifier&#10;V3, 6AV6 detector and first audio&#10;C1, 0.047uF 600V coupling cap"></textarea></label>
+      <p class="hint">Write the reference first, then a comma, then the description. A line with no comma is used as the description. With the category blank, the reference letter picks it: V is Tube, C is Capacitor, R is Resistor, T is Transformer, L is Coil, S is Switch. Everything starts as Not checked and costs nothing.</p>
+      <p class="preview" id="bulkPreview" aria-live="polite"></p>`,
+    onMount: ({ form }) => {
+      const out = $('#bulkPreview', form);
+      form.elements.lines.addEventListener('input', () => {
+        const n = parse(form.elements.lines.value).length;
+        out.textContent = n ? `${n} component${n === 1 ? '' : 's'} will be added.` : '';
+      });
+    },
+    onSubmit: async (form) => {
+      const d = formData(form);
+      toast(`Added ${await D.addComponentsBulk(B.radio.id, d.category, parse(d.lines))} components`);
+      return 'ok';
+    },
+  });
+  if (ok === 'ok') await reload();
+}
+
+// A part used on the radio right away, without listing the original component first.
+async function partUsedDialog() {
   let parts = await D.listParts();
   const cats = await D.listCategories();
-  let selected = null, autoDesc = '';
-
+  let autoDesc = '', picker = null;
   await openModal({
-    title: editing ? 'Edit item' : 'Add item',
-    submitButtons: editing
-      ? [{ label: 'Save changes', value: 'ok' }]
-      : [{ label: 'Add item', value: 'ok' }, { label: 'Add and add another', value: 'again', kind: 'ghost' }],
+    title: 'Add part used',
+    submitButtons: [{ label: 'Add part', value: 'ok' }, { label: 'Add and add another', value: 'again', kind: 'ghost' }],
     body: `
-      ${editing ? '' : `<fieldset class="seg-field">
-        <legend class="sr-only">Where the item comes from</legend>
-        <label class="seg"><input type="radio" name="source" value="part" checked><span>From inventory</span></label>
-        <label class="seg"><input type="radio" name="source" value="manual"><span>Manual entry</span></label>
-      </fieldset>`}
-      ${linked ? `<p class="part-line"><strong>${esc(comp.part?.partNumber ?? 'Part')}</strong> from inventory. Changing the quantity updates stock.</p>` : ''}
-      <div id="srcPart" ${editing ? 'hidden' : ''}>
-        <label class="field"><span>Find a part</span><input type="search" id="partSearch" placeholder="Search part number or description" autocomplete="off"></label>
-        <div id="partList" class="pick-list" role="listbox" aria-label="Inventory parts"></div>
-        <input type="hidden" name="partId" value="">
-      </div>
+      ${sourceBlock()}
       <div class="grid2">
-        <label class="field"><span>Category</span><input name="category" list="catList" value="${esc(comp?.category ?? '')}" placeholder="Capacitor" autocomplete="off"></label>
-        <label class="field"><span>Reference</span><input name="ref" value="${esc(comp?.ref ?? '')}" placeholder="C12" autocomplete="off"></label>
+        <label class="field"><span>Category</span><input name="category" list="catList" placeholder="Capacitor" autocomplete="off"></label>
+        <label class="field"><span>Reference</span><input name="ref" placeholder="C12" autocomplete="off"></label>
       </div>
-      <datalist id="catList">${cats.map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
-      <label class="field"><span>Description</span><input name="description" value="${esc(comp?.description ?? '')}" placeholder="0.1uF 400V cap" autocomplete="off"></label>
+      ${catList(cats)}
+      <label class="field"><span>Description</span><input name="description" placeholder="0.1uF 400V cap" autocomplete="off"></label>
       <div class="grid2">
-        <label class="field"><span>Quantity</span><input name="qty" type="number" min="0" step="any" value="${comp ? comp.qty : 1}"></label>
-        <label class="field"><span>Cost each ($)</span><input name="unitCost" type="number" min="0" step="any" value="${comp && !linked ? comp.unitCost : ''}" ${linked || !editing ? 'disabled' : ''} placeholder="${linked ? unitMoney(comp.unitCost) : 'From inventory'}"></label>
-      </div>
-      <label class="check"><input type="checkbox" name="verified" ${comp?.verified ? 'checked' : ''}><span>Verified correct</span></label>`,
+        <label class="field"><span>Quantity</span><input name="qty" type="number" min="0" step="any" value="1"></label>
+        ${costField(true)}
+      </div>`,
     onMount: ({ form }) => {
-      const list = $('#partList', form), search = $('#partSearch', form), srcPart = $('#srcPart', form);
-      const cost = form.elements.unitCost;
-      const draw = () => {
-        if (!list) return;
-        const q = (search?.value ?? '').trim().toLowerCase().split(/\s+/).filter(Boolean);
-        const hits = parts.filter((p) => q.every((t) => `${p.partNumber} ${p.description}`.toLowerCase().includes(t)))
-          .sort((a, b) => natural(a.partNumber, b.partNumber)).slice(0, 40);
-        list.innerHTML = hits.length
-          ? hits.map((p) => `<button type="button" class="pick ${selected === p.id ? 'on' : ''}" role="option" aria-selected="${selected === p.id}" data-pid="${p.id}">
-              <span class="mono">${esc(p.partNumber)}</span><span>${esc(p.description)}</span>
-              <span class="stock ${p.qty <= 0 ? 'out' : ''}">${fmtQty(p.qty)} on hand</span></button>`).join('')
-          : `<p class="empty-note">${parts.length ? 'No parts match.' : 'Inventory is empty. Use Manual entry, or add parts in Inventory first.'}</p>`;
-      };
-      const choose = (id) => {
-        selected = id;
-        form.elements.partId.value = id ?? '';
-        const p = parts.find((x) => x.id === id);
-        if (p) {
-          if (!form.elements.description.value.trim() || form.elements.description.value === autoDesc) { form.elements.description.value = p.description; autoDesc = p.description; }
-          cost.value = p.unitCost;
-        }
-        draw();
-      };
-      list?.addEventListener('click', (e) => { const b = e.target.closest('[data-pid]'); if (b) choose(Number(b.dataset.pid)); });
-      search?.addEventListener('input', draw);
-      const setSource = () => {
-        const manual = form.elements.source?.value === 'manual';
-        srcPart.hidden = manual;
-        cost.disabled = !manual;
-        if (manual) { choose(null); cost.value = ''; cost.placeholder = '0.00'; } else { cost.placeholder = 'From inventory'; }
-      };
-      form.querySelectorAll('[name=source]').forEach((r) => r.addEventListener('change', setSource));
-      draw();
+      const desc = form.elements.description;
+      picker = wireSource(form, parts, { onChoose: (p) => {
+        if (p && (!desc.value.trim() || desc.value === autoDesc)) { desc.value = p.description; autoDesc = p.description; }
+      } });
       form._reset = async () => {
-        parts = await D.listParts();
-        selected = null; autoDesc = '';
-        form.elements.partId.value = ''; form.elements.ref.value = ''; form.elements.description.value = '';
-        form.elements.qty.value = 1; form.elements.verified.checked = false;
-        cost.value = '';
-        if (search) search.value = '';
-        draw();
-        (form.elements.source?.value === 'manual' ? form.elements.ref : search).focus();
+        parts = await D.listParts(); picker.refresh(parts); picker.reset();
+        form.elements.ref.value = ''; desc.value = ''; form.elements.qty.value = 1; autoDesc = '';
+        (picker.isManual() ? form.elements.ref : picker.search).focus();
       };
     },
     onSubmit: async (form, api, sv) => {
       const d = formData(form);
-      if (editing) {
-        await D.updateComponent(comp.id, {
-          category: d.category, ref: d.ref, description: d.description, qty: d.qty,
-          verified: !!d.verified, unitCost: d.unitCost,
-        });
-        toast('Item updated');
-        await reload();
-        return 'ok';
-      }
       const fromPart = (d.source ?? 'part') === 'part';
-      if (fromPart && !d.partId) { api.error('Pick a part from the list, or switch to Manual entry.'); return false; }
+      if (fromPart && !d.partId) { api.error('Pick a part from the list, or switch to Typed-in cost.'); return false; }
       await D.addComponent(B.radio.id, {
         partId: fromPart ? Number(d.partId) : null, category: d.category, ref: d.ref, description: d.description,
-        qty: d.qty, unitCost: fromPart ? 0 : d.unitCost, verified: !!d.verified,
+        qty: d.qty, unitCost: fromPart ? 0 : d.unitCost, status: 'replaced',
       });
-      toast(`Added ${d.description || 'item'}`);
+      toast(`Added ${d.description || 'part'}`);
       await reload();
       if (sv === 'again') { await form._reset(); return false; }
       return 'ok';
@@ -392,11 +437,85 @@ async function itemDialog(comp = null) {
   });
 }
 
+// Record what replaced a component: a part from inventory, or a typed-in cost.
+async function replaceDialog(c) {
+  const parts = await D.listParts();
+  const ok = await openModal({
+    title: 'Replace component', submitButtons: [{ label: 'Mark as replaced', value: 'ok' }],
+    body: `
+      <p class="part-line"><strong>${esc(c.ref ? `${c.ref}: ` : '')}${esc(c.description)}</strong> <span class="muted">${esc(c.category)}</span></p>
+      ${sourceBlock()}
+      <div class="grid2">
+        <label class="field"><span>Quantity used</span><input name="qty" type="number" min="0" step="any" value="${c.qty}"></label>
+        ${costField(true)}
+      </div>`,
+    onMount: ({ form }) => { wireSource(form, parts); },
+    onSubmit: async (form, api) => {
+      const d = formData(form);
+      const fromPart = (d.source ?? 'part') === 'part';
+      if (fromPart && !d.partId) { api.error('Pick the part you used, or switch to Typed-in cost.'); return false; }
+      await D.replaceComponent(c.id, { partId: fromPart ? Number(d.partId) : null, qty: d.qty, unitCost: fromPart ? 0 : d.unitCost });
+      return 'ok';
+    },
+  });
+  if (ok === 'ok') toast('Marked as replaced');
+  await reload(); // also puts the status menu back if the dialog was cancelled
+}
+
+async function editLineDialog(c) {
+  const cats = await D.listCategories();
+  const manualCost = !c.partId && c.status === 'replaced';
+  const ok = await openModal({
+    title: 'Edit component', submitButtons: [{ label: 'Save changes', value: 'ok' }],
+    body: `
+      ${c.partId ? `<p class="part-line"><strong>${esc(c.part?.partNumber ?? 'Part')}</strong> from inventory. Changing the quantity updates stock.</p>` : ''}
+      <div class="grid2">
+        <label class="field"><span>Category</span><input name="category" list="catList" value="${esc(c.category)}" autocomplete="off"></label>
+        <label class="field"><span>Reference</span><input name="ref" value="${esc(c.ref)}" autocomplete="off"></label>
+      </div>
+      ${catList(cats)}
+      <label class="field"><span>Description</span><input name="description" value="${esc(c.description)}" autocomplete="off"></label>
+      <div class="grid2">
+        <label class="field"><span>Quantity</span><input name="qty" type="number" min="0" step="any" value="${c.qty}"></label>
+        ${manualCost ? costField(false, c.unitCost) : ''}
+      </div>
+      <label class="field"><span>Notes</span><textarea name="note" rows="3" placeholder="Test results, what to order, where it is on the chassis">${esc(c.note)}</textarea></label>`,
+    onSubmit: async (form) => { await D.updateComponent(c.id, formData(form)); return 'ok'; },
+  });
+  if (ok === 'ok') { toast('Component updated'); await reload(); }
+}
+
+async function undoFlow(c, thenStatus = 'replace') {
+  const v = await confirmChoice({
+    title: 'Undo this replacement?',
+    message: `${fmtQty(c.qty)} x ${c.part?.partNumber ?? 'part'} was taken from inventory for this. Put it back on the shelf, or was it used up or damaged?`,
+    choices: [
+      { label: 'Return to stock', value: 'return', kind: 'primary' },
+      { label: 'Used up, do not return', value: 'keep', kind: 'ghost' },
+    ],
+  });
+  if (!v) return false;
+  await D.undoReplacement(c.id, { returnToStock: v === 'return' });
+  if (thenStatus !== 'replace') await D.setStatus(c.id, thenStatus);
+  toast(v === 'return' ? 'Undone and returned to stock' : 'Undone');
+  return true;
+}
+
+async function changeCompStatus(el) {
+  const c = B.components.find((x) => x.id === Number(el.dataset.id));
+  const next = el.value;
+  if (!c || next === c.status) return;
+  if (next === 'replaced') { await replaceDialog(c); return; }
+  if (c.partId) await undoFlow(c, next);
+  else await D.setStatus(c.id, next);
+  await reload();
+}
+
 async function removeLine(comp) {
   if (comp.partId && comp.part) {
     const v = await confirmChoice({
-      title: 'Remove this item?',
-      message: `${fmtQty(comp.qty)} x ${comp.part.partNumber} (${comp.description}) came from inventory. Put ${fmtQty(comp.qty)} back on the shelf, or was it used up or damaged?`,
+      title: 'Remove this component?',
+      message: `${fmtQty(comp.qty)} x ${comp.part.partNumber} (${comp.description}) came from inventory. Put it back on the shelf, or was it used up or damaged?`,
       choices: [
         { label: 'Return to stock', value: 'return', kind: 'primary' },
         { label: 'Used up, do not return', value: 'keep', kind: 'ghost' },
@@ -407,12 +526,12 @@ async function removeLine(comp) {
     toast(v === 'return' ? 'Removed and returned to stock' : 'Removed');
   } else {
     const v = await confirmChoice({
-      title: 'Remove this item?', message: `${comp.description} will be removed from this radio's parts list.`,
-      choices: [{ label: 'Remove item', value: 'yes', kind: 'danger' }],
+      title: 'Remove this component?', message: `${comp.description} will be removed from this radio's list.`,
+      choices: [{ label: 'Remove component', value: 'yes', kind: 'danger' }],
     });
     if (v !== 'yes') return;
     await D.removeComponent(comp.id, { returnToStock: false });
-    toast('Item removed');
+    toast('Component removed');
   }
   await reload();
 }
@@ -580,8 +699,12 @@ const comp = (el) => B.components.find((c) => c.id === Number(el.dataset.id));
 const auxRow = (el) => B.aux.find((a) => a.id === Number(el.dataset.id));
 
 export const actions = {
-  'add-item': () => itemDialog(),
-  'edit-line': (el) => itemDialog(comp(el)),
+  'add-components': () => bulkDialog(),
+  'add-part-used': () => partUsedDialog(),
+  'edit-line': (el) => editLineDialog(comp(el)),
+  'replace-line': (el) => replaceDialog(comp(el)),
+  'undo-replace': async (el) => { if (await undoFlow(comp(el))) await reload(); },
+  'comp-filter': (el) => { S.comp.status = el.dataset.value; paintComponents(); },
   'remove-line': (el) => removeLine(comp(el)),
   'add-aux': (el) => auxDialog(null, el.dataset.label),
   'edit-aux': (el) => auxDialog(auxRow(el)),
@@ -601,7 +724,7 @@ export const changes = {
     paintHead();
     document.title = `${D.radioName(B.radio)} - Niogen Tracker`;
   },
-  verify: async (el) => { await D.setVerified(Number(el.dataset.id), el.checked); await reload(); },
+  compstatus: (el) => changeCompStatus(el),
   photos: async (el) => { const files = [...el.files]; el.value = ''; await addPhotos(files); },
   listing: async (el) => { await D.setListing(B.radio.id, Number(el.dataset.seller), el.value); await reload(); },
   rate: async (el) => {

@@ -1,6 +1,6 @@
 // Niogen Tracker: light/dark theme. The saved choice is auto, light, or dark.
 
-const BAR = { light: '#17405f', dark: '#1f1f1d' };
+const BAR = { light: '#12344f', dark: '#1b1b19' };
 let pref = 'auto';
 const mq = window.matchMedia?.('(prefers-color-scheme: dark)');
 

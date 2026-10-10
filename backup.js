@@ -3,9 +3,9 @@
 // depends on a second folder. Chrome and Edge can also mirror it to a folder you
 // pick, automatically, after every change.
 
-import { db, withoutNotify, setSetting } from './db.js';
+import { db, withoutNotify, setSetting, normalizeComponent, normalizePart } from './db.js';
 
-export const BACKUP_VERSION = 1;
+export const BACKUP_VERSION = 2; // 2 added component status/notes and on-order parts; version 1 files still restore
 const TABLES = ['parts', 'radios', 'components', 'aux', 'stock', 'photos', 'photoBlobs', 'sellers', 'listings'];
 const DEVICE_ONLY = new Set(['backupDirHandle', 'lastBackupAt']); // never part of a backup
 const KEEP_DAYS = 14;
@@ -56,12 +56,14 @@ export async function importAll(obj) {
   // Decode photos before the transaction: awaiting non-database work inside one can end it early.
   const photos = d.photos.map((p) => ({ ...p, thumb: dataUrlToBlob(p.thumb) }));
   const photoBlobs = d.photoBlobs.map((r) => ({ id: r.id, blob: dataUrlToBlob(r.blob) }));
+  const parts = d.parts.map((p) => normalizePart({ ...p }));            // older backups lack the newer fields
+  const components = d.components.map((c) => normalizeComponent({ ...c }));
   await withoutNotify(() =>
     db.transaction('rw', db.tables, async () => {
       for (const t of TABLES) await db.table(t).clear();
-      await db.parts.bulkAdd(d.parts);
+      await db.parts.bulkAdd(parts);
       await db.radios.bulkAdd(d.radios);
-      await db.components.bulkAdd(d.components);
+      await db.components.bulkAdd(components);
       await db.aux.bulkAdd(d.aux);
       await db.stock.bulkAdd(d.stock);
       await db.photos.bulkAdd(photos);
