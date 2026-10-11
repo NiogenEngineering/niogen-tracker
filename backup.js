@@ -3,10 +3,11 @@
 // depends on a second folder. Chrome and Edge can also mirror it to a folder you
 // pick, automatically, after every change.
 
-import { db, withoutNotify, setSetting, normalizeComponent, normalizePart } from './db.js';
+import { db, withoutNotify, setSetting, normalizeComponent, normalizePart, normalizeRadio } from './db.js';
 
-export const BACKUP_VERSION = 2; // 2 added component status/notes and on-order parts; version 1 files still restore
-const TABLES = ['parts', 'radios', 'components', 'aux', 'stock', 'photos', 'photoBlobs', 'sellers', 'listings'];
+export const BACKUP_VERSION = 4; // 2 added component status and on-order parts, 3 shop costs, 4 categories and orders; older files still restore
+const TABLES = ['parts', 'radios', 'components', 'aux', 'stock', 'photos', 'photoBlobs', 'sellers', 'listings', 'shopCosts', 'categories', 'orders', 'orderLines'];
+const OPTIONAL_TABLES = new Set(['shopCosts', 'categories', 'orders', 'orderLines']); // missing from backups made before they existed
 const DEVICE_ONLY = new Set(['backupDirHandle', 'lastBackupAt']); // never part of a backup
 const KEEP_DAYS = 14;
 
@@ -42,11 +43,12 @@ export function inspectBackup(obj) {
   if (!obj || obj.app !== 'niogen-tracker' || !obj.data) throw new Error('This file is not a Niogen Tracker backup.');
   if (obj.version > BACKUP_VERSION) throw new Error('This backup was made by a newer version of the app. Update the app first.');
   for (const t of [...TABLES, 'settings']) {
+    if (OPTIONAL_TABLES.has(t) && obj.data[t] === undefined) continue;
     if (!Array.isArray(obj.data[t])) throw new Error(`The backup is missing its "${t}" data.`);
   }
   return {
     radios: obj.data.radios.length, parts: obj.data.parts.length, photos: obj.data.photos.length,
-    exportedAt: obj.exportedAt,
+    shopCosts: (obj.data.shopCosts ?? []).length, orders: (obj.data.orders ?? []).length, exportedAt: obj.exportedAt,
   };
 }
 
@@ -58,11 +60,13 @@ export async function importAll(obj) {
   const photoBlobs = d.photoBlobs.map((r) => ({ id: r.id, blob: dataUrlToBlob(r.blob) }));
   const parts = d.parts.map((p) => normalizePart({ ...p }));            // older backups lack the newer fields
   const components = d.components.map((c) => normalizeComponent({ ...c }));
+  const radios = d.radios.map((r) => normalizeRadio({ ...r }));
+  const shopCosts = d.shopCosts ?? [], categories = d.categories ?? [], orders = d.orders ?? [], orderLines = d.orderLines ?? [];
   await withoutNotify(() =>
     db.transaction('rw', db.tables, async () => {
       for (const t of TABLES) await db.table(t).clear();
       await db.parts.bulkAdd(parts);
-      await db.radios.bulkAdd(d.radios);
+      await db.radios.bulkAdd(radios);
       await db.components.bulkAdd(components);
       await db.aux.bulkAdd(d.aux);
       await db.stock.bulkAdd(d.stock);
@@ -70,6 +74,10 @@ export async function importAll(obj) {
       await db.photoBlobs.bulkAdd(photoBlobs);
       await db.sellers.bulkAdd(d.sellers);
       await db.listings.bulkAdd(d.listings);
+      await db.shopCosts.bulkAdd(shopCosts);
+      await db.categories.bulkAdd(categories);
+      await db.orders.bulkAdd(orders);
+      await db.orderLines.bulkAdd(orderLines);
       const keep = (await db.settings.toArray()).filter((r) => DEVICE_ONLY.has(r.key)).map((r) => r.key);
       await db.settings.filter((r) => !keep.includes(r.key)).delete();
       await db.settings.bulkPut(d.settings.filter((r) => !DEVICE_ONLY.has(r.key)));

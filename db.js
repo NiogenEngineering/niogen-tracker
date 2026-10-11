@@ -22,6 +22,7 @@ export const DEFAULT_SETTINGS = {
   laborRate: 20,
   taxPct: 8.25,
   cushionPct: 10,
+  consumables: 0,
   theme: 'auto',
   lastBackupAt: null,
   sellersSeeded: false,
@@ -63,7 +64,13 @@ export function normalizePart(p) {
   if (p.onOrderQty === undefined) p.onOrderQty = 0;
   if (p.onOrderNote === undefined) p.onOrderNote = '';
   if (p.onOrderAt === undefined) p.onOrderAt = null;
+  if (p.categoryId === undefined) p.categoryId = null;
   return p;
+}
+
+export function normalizeRadio(r) {
+  if (r.consumables === undefined) r.consumables = 0;
+  return r;
 }
 
 const SCHEMA = {
@@ -82,6 +89,19 @@ export const db = new Dexie('niogen-tracker');
 db.version(1).stores(SCHEMA);
 db.version(2).stores(SCHEMA).upgrade(async (tx) => {
   await tx.table('components').toCollection().modify((c) => { normalizeComponent(c); });
+  await tx.table('parts').toCollection().modify((p) => { normalizePart(p); });
+});
+// Version 3: shop costs (tools and supplies not tied to one radio) and a consumables charge per radio.
+db.version(3).stores({ shopCosts: '++id, date' }).upgrade(async (tx) => {
+  await tx.table('radios').toCollection().modify((r) => { normalizeRadio(r); });
+});
+// Version 4: inventory categories and purchase orders.
+db.version(4).stores({
+  parts: '++id, &key, partNumber, categoryId',
+  categories: '++id, &key',
+  orders: '++id, status, date',
+  orderLines: '++id, orderId, partId, radioId',
+}).upgrade(async (tx) => {
   await tx.table('parts').toCollection().modify((p) => { normalizePart(p); });
 });
 
@@ -112,7 +132,7 @@ db.tables.forEach((t) => {
 
 export const r4 = (n) => Math.round(num(n) * 1e4) / 1e4;
 export const r6 = (n) => Math.round(num(n) * 1e6) / 1e6;
-const trim = (v) => String(v ?? '').trim();
+export const trim = (v) => String(v ?? '').trim();
 export const keyOf = (partNumber) => String(partNumber ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
 /* ---------- settings ---------- */
@@ -172,12 +192,13 @@ export async function addPart(input) {
   if (qty < 0) throw new AppError('Quantity cannot be negative.', 'invalid');
   const ordered = num(input.onOrderQty);
   if (ordered < 0) throw new AppError('Quantity on order cannot be negative.', 'invalid');
-  return db.transaction('rw', db.parts, db.stock, async () => {
+  return db.transaction('rw', db.parts, db.stock, db.categories, async () => {
     const dup = await findPartByNumber(clean.partNumber);
     if (dup) throw new AppError(dupMessage(dup), 'duplicate', dup);
     const now = Date.now();
+    const categoryId = await ensurePartCategory(input.category);
     const id = await db.parts.add({
-      ...clean, key: keyOf(clean.partNumber), qty: r4(qty), createdAt: now, updatedAt: now,
+      ...clean, key: keyOf(clean.partNumber), qty: r4(qty), createdAt: now, updatedAt: now, categoryId,
       onOrderQty: r4(ordered), onOrderNote: ordered > 0 ? trim(input.onOrderNote) : '', onOrderAt: ordered > 0 ? now : null,
     });
     if (qty > 0) await db.stock.add({ partId: id, delta: r4(qty), reason: 'initial', note: 'Added to inventory', unitCost: clean.unitCost, date: now });
@@ -188,32 +209,38 @@ export async function addPart(input) {
 
 export async function updatePart(id, input) {
   const clean = cleanPartInput(input);
-  return db.transaction('rw', db.parts, async () => {
+  return db.transaction('rw', db.parts, db.categories, async () => {
     const dup = await findPartByNumber(clean.partNumber, id);
     if (dup) throw new AppError(dupMessage(dup), 'duplicate', dup);
-    await db.parts.update(id, { ...clean, key: keyOf(clean.partNumber), updatedAt: Date.now() });
+    const changes = { ...clean, key: keyOf(clean.partNumber), updatedAt: Date.now() };
+    if (input.category !== undefined) changes.categoryId = await ensurePartCategory(input.category);
+    await db.parts.update(id, changes);
   });
 }
 
 // Weighted-average cost: a new case of resistors at a different price blends in
 // with what is already on the shelf. Radios keep the cost they were issued at.
+// Must run inside a transaction that includes db.parts and db.stock.
+// onOrderReduce is how much of the on-order amount this delivery satisfies (normally all of it).
+export async function receiveInTx(partId, qty, unitCost, note = '', onOrderReduce = qty) {
+  const part = await db.parts.get(partId);
+  if (!part) throw new AppError('That part no longer exists.', 'missing');
+  const newQty = r4(part.qty + qty);
+  const newCost = part.qty > 0 ? r6((part.qty * part.unitCost + qty * unitCost) / newQty) : r6(unitCost);
+  const stillOn = Math.max(0, r4((part.onOrderQty || 0) - onOrderReduce)); // what arrived is no longer "on order"
+  await db.parts.update(partId, {
+    qty: newQty, unitCost: newCost, updatedAt: Date.now(),
+    onOrderQty: stillOn, onOrderNote: stillOn > 0 ? part.onOrderNote : '', onOrderAt: stillOn > 0 ? part.onOrderAt : null,
+  });
+  await db.stock.add({ partId, delta: r4(qty), reason: 'received', note: trim(note), unitCost: r6(unitCost), date: Date.now() });
+  return { qty: newQty, unitCost: newCost, onOrderQty: stillOn };
+}
+
 export async function receiveStock(partId, qty, unitCost, note = '') {
   qty = num(qty); unitCost = num(unitCost);
   if (!(qty > 0)) throw new AppError('Enter a quantity greater than zero.', 'invalid');
   if (unitCost < 0) throw new AppError('Unit cost cannot be negative.', 'invalid');
-  return db.transaction('rw', db.parts, db.stock, async () => {
-    const part = await db.parts.get(partId);
-    if (!part) throw new AppError('That part no longer exists.', 'missing');
-    const newQty = r4(part.qty + qty);
-    const newCost = part.qty > 0 ? r6((part.qty * part.unitCost + qty * unitCost) / newQty) : r6(unitCost);
-    const stillOn = Math.max(0, r4((part.onOrderQty || 0) - qty)); // what arrived is no longer "on order"
-    await db.parts.update(partId, {
-      qty: newQty, unitCost: newCost, updatedAt: Date.now(),
-      onOrderQty: stillOn, onOrderNote: stillOn > 0 ? part.onOrderNote : '', onOrderAt: stillOn > 0 ? part.onOrderAt : null,
-    });
-    await db.stock.add({ partId, delta: r4(qty), reason: 'received', note: trim(note), unitCost: r6(unitCost), date: Date.now() });
-    return { qty: newQty, unitCost: newCost, onOrderQty: stillOn };
-  });
+  return db.transaction('rw', db.parts, db.stock, () => receiveInTx(partId, qty, unitCost, note));
 }
 
 const orderNote = (qty, note) => `${r4(qty)} on order${trim(note) ? `: ${trim(note)}` : ''}`;
@@ -249,9 +276,11 @@ export async function adjustStock(partId, newQty, reasonLabel = 'Count correctio
 }
 
 export async function deletePart(id) {
-  return db.transaction('rw', db.parts, db.stock, db.components, async () => {
+  return db.transaction('rw', db.parts, db.stock, db.components, db.orderLines, async () => {
     const used = await db.components.where('partId').equals(id).count();
     if (used > 0) throw new AppError(`This part is used on ${used} radio line${used === 1 ? '' : 's'}. Remove those first, or leave the quantity at 0.`, 'in-use');
+    const ordered = await db.orderLines.where('partId').equals(id).count();
+    if (ordered > 0) throw new AppError(`This part is on ${ordered} order line${ordered === 1 ? '' : 's'}. Remove it from those orders first.`, 'in-use');
     await db.stock.where('partId').equals(id).delete();
     await db.parts.delete(id);
   });
@@ -290,6 +319,53 @@ export async function listVendors() {
   return [...new Set(parts.map((p) => p.vendor).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
 
+/* ---------- inventory categories (designated by the user) ---------- */
+
+const catKey = (name) => trim(name).toLowerCase();
+export const listPartCategories = async () =>
+  (await db.categories.toArray()).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+// Finds a category by name, or creates it. Blank means "no category".
+export async function ensurePartCategory(name) {
+  const clean = trim(name);
+  if (!clean) return null;
+  const found = await db.categories.where('key').equals(catKey(clean)).first();
+  return found ? found.id : db.categories.add({ name: clean, key: catKey(clean) });
+}
+export async function renamePartCategory(id, name) {
+  const clean = trim(name);
+  if (!clean) throw new AppError('Enter a name for the category.', 'invalid');
+  const other = await db.categories.where('key').equals(catKey(clean)).first();
+  if (other && other.id !== id) throw new AppError(`There is already a category called ${other.name}.`, 'duplicate');
+  await db.categories.update(id, { name: clean, key: catKey(clean) });
+}
+export async function deletePartCategory(id) {
+  await db.transaction('rw', db.categories, db.parts, async () => {
+    await db.parts.where('categoryId').equals(id).modify({ categoryId: null }); // parts are kept, just uncategorized
+    await db.categories.delete(id);
+  });
+}
+export async function setPartsCategory(partIds, categoryName) {
+  return db.transaction('rw', db.parts, db.categories, async () => {
+    const categoryId = await ensurePartCategory(categoryName);
+    await db.parts.where('id').anyOf(partIds).modify({ categoryId, updatedAt: Date.now() });
+    return categoryId;
+  });
+}
+
+// A best guess from the description and part number, used to sort an existing inventory in one pass.
+const CATEGORY_RULES = [
+  [/resistor/i, 'Resistors'], [/capacitor|\bcap\b/i, 'Capacitors'], [/speaker/i, 'Speakers'],
+  [/\btube\b|vacuum/i, 'Tubes'], [/transformer/i, 'Transformers'], [/switch|potentiometer|\bpot\b/i, 'Switches and controls'],
+  [/\bknob\b|\bdial\b/i, 'Knobs and dials'], [/wire|cord|cable/i, 'Wire and cable'], [/power supply|module|converter|adapter/i, 'Power and modules'],
+];
+export function suggestPartCategoryName(part) {
+  for (const [re, name] of CATEGORY_RULES) if (re.test(part.description)) return name;
+  if (/^\d*\.?\d*R-/i.test(part.partNumber) || /^R-/i.test(part.partNumber)) return 'Resistors';
+  if (/^C-/i.test(part.partNumber)) return 'Capacitors';
+  return null;
+}
+
 /* ---------- radios ---------- */
 
 export const radioName = (r) => [r.manufacturer, r.model].filter(Boolean).join(' ') || 'Untitled radio';
@@ -307,6 +383,7 @@ export async function createRadio(input) {
     laborRate: num(s.laborRate),
     taxPct: num(s.taxPct),
     cushionPct: num(s.cushionPct),
+    consumables: num(s.consumables),
     createdAt: now,
     updatedAt: now,
   });
@@ -330,7 +407,8 @@ export async function reopenRadio(id, status) {
 }
 
 export async function deleteRadio(id, { returnParts }) {
-  return db.transaction('rw', db.radios, db.components, db.parts, db.stock, db.aux, db.photos, db.photoBlobs, db.listings, async () => {
+  return db.transaction('rw', db.radios, db.components, db.parts, db.stock, db.aux, db.photos, db.photoBlobs, db.listings, db.orderLines, async () => {
+    await db.orderLines.where('radioId').equals(id).modify({ radioId: null }); // parts stay on their orders, just untied
     const comps = await db.components.where('radioId').equals(id).toArray();
     if (returnParts) {
       for (const c of comps) {
@@ -382,7 +460,7 @@ export async function loadRadioSummaries() {
     .map((radio) => {
       const costs = computeCosts({
         components: gc.get(radio.id) ?? [], aux: ga.get(radio.id) ?? [],
-        laborRate: radio.laborRate, taxPct: radio.taxPct,
+        laborRate: radio.laborRate, taxPct: radio.taxPct, consumables: radio.consumables,
       });
       const pics = (gp.get(radio.id) ?? []).sort((a, b) => a.order - b.order);
       const lines = gc.get(radio.id) ?? [];
@@ -573,6 +651,29 @@ export async function listReplacements() {
   const radios = await db.radios.bulkGet([...new Set(lines.map((l) => l.radioId))]);
   const byId = new Map(radios.filter(Boolean).map((r) => [r.id, r]));
   return lines.map((l) => ({ ...l, radio: byId.get(l.radioId) })).filter((l) => l.radio);
+}
+
+/* ---------- shop costs: tools and supplies that are not billed to one radio ---------- */
+
+function cleanShopCost(input) {
+  const label = trim(input.label);
+  if (!label) throw new AppError('Enter what the cost is for.', 'invalid');
+  const raw = String(input.amount ?? '').trim();
+  const amount = num(raw);
+  if (raw === '' || !(amount > 0)) throw new AppError('Enter an amount greater than zero.', 'invalid');
+  const date = Number(input.date) || Date.now();
+  return { label, amount: round2(amount), date, note: trim(input.note) };
+}
+export const listShopCosts = async () => (await db.shopCosts.toArray()).sort((a, b) => b.date - a.date || b.id - a.id);
+export const addShopCost = async (input) => db.shopCosts.add({ ...cleanShopCost(input), createdAt: Date.now() });
+export const updateShopCost = async (id, input) => db.shopCosts.update(id, cleanShopCost(input));
+export const removeShopCost = (id) => db.shopCosts.delete(id);
+
+// Sets the consumables charge on every radio that is not sold yet. Sold radios keep what they were charged.
+export async function applyConsumablesToUnsold(amount) {
+  amount = num(amount);
+  if (amount < 0) throw new AppError('Consumables cannot be negative.', 'invalid');
+  return db.radios.filter((r) => r.status !== 'sold').modify({ consumables: round2(amount) });
 }
 
 /* ---------- auxiliary costs ---------- */

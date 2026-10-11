@@ -8,6 +8,7 @@ import { esc, money, unitMoney, fmtQty, fmtDate, formData, openModal, confirmCho
 const COLUMNS = [
   { key: 'partNumber', label: 'Part number' },
   { key: 'description', label: 'Description' },
+  { key: 'categoryName', label: 'Category' },
   { key: 'qty', label: 'On hand', num: true },
   { key: 'onOrderQty', label: 'On order' },
   { key: 'bin', label: 'Bin' },
@@ -17,9 +18,21 @@ const COLUMNS = [
 const natural = (a, b) => String(a ?? '').localeCompare(String(b ?? ''), undefined, { numeric: true, sensitivity: 'base' });
 
 let parts = [];
+let categories = [];
+const selected = new Set(); // parts ticked for "Set category"
+
+const catName = (p) => categories.find((c) => c.id === p.categoryId)?.name ?? '';
 
 export async function render(view) {
   parts = await D.listParts();
+  categories = await D.listPartCategories();
+  for (const p of parts) p.categoryName = catName(p);
+  for (const id of [...selected]) if (!parts.some((p) => p.id === id)) selected.delete(id);
+  // a category that no longer exists cannot stay as the active filter
+  if (typeof S.inv.category === 'number' && !categories.some((c) => c.id === S.inv.category)) S.inv.category = 'all';
+  const uncategorized = parts.filter((p) => p.categoryId == null);
+  const suggestable = uncategorized.filter((p) => D.suggestPartCategoryName(p)).length;
+  const chip = (id, label, n) => `<button class="fchip ${S.inv.category === id ? 'on' : ''}" aria-pressed="${S.inv.category === id}" data-action="inv-category" data-value="${id}">${esc(label)} <span class="count">${n}</span></button>`;
   view.innerHTML = `
     <div class="page-head">
       <h1>Inventory</h1>
@@ -29,10 +42,19 @@ export async function render(view) {
         <button class="btn primary" data-action="add-part">Add part</button>
       </div>
     </div>
+    <div class="fchips" role="group" aria-label="Filter by category">
+      ${chip('all', 'All', parts.length)}
+      ${categories.map((c) => chip(c.id, c.name, parts.filter((p) => p.categoryId === c.id).length)).join('')}
+      ${uncategorized.length && categories.length ? chip('none', 'Uncategorized', uncategorized.length) : ''}
+      <button class="fchip manage" data-action="manage-categories">Manage categories</button>
+      ${suggestable ? `<button class="fchip manage" data-action="suggest-categories">Suggest categories (${suggestable})</button>` : ''}
+    </div>
+    <div class="selbar" id="selBar" hidden></div>
     <div class="panel flush">
       <div class="table-wrap">
         <table class="data" id="invTable">
           <thead><tr>
+            <th class="chk"><input type="checkbox" id="invAll" data-change="inv-select-all" aria-label="Select all shown parts"></th>
             ${COLUMNS.map((c) => `<th class="${c.num ? 'num' : ''}" aria-sort="${S.inv.sort === c.key ? (S.inv.dir > 0 ? 'ascending' : 'descending') : 'none'}"><button class="th-sort" data-action="sort-inv" data-col="${c.key}">${c.label}<span aria-hidden="true">${S.inv.sort === c.key ? (S.inv.dir > 0 ? ' \u25B2' : ' \u25BC') : ''}</span></button></th>`).join('')}
             <th><span class="sr-only">Actions</span></th>
           </tr></thead>
@@ -46,29 +68,33 @@ export async function render(view) {
   paintRows();
 }
 
+let shown = [];
 function paintRows() {
   const q = S.inv.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const { sort, dir } = S.inv;
-  const list = parts
+  shown = parts
+    .filter((p) => S.inv.category === 'all' || (S.inv.category === 'none' ? p.categoryId == null : p.categoryId === S.inv.category))
     .filter((p) => !S.inv.ordered || p.onOrderQty > 0)
-    .filter((p) => q.every((t) => [p.partNumber, p.description, p.bin, p.vendor, p.onOrderNote].join(' ').toLowerCase().includes(t)))
+    .filter((p) => q.every((t) => [p.partNumber, p.description, p.categoryName, p.bin, p.vendor, p.onOrderNote].join(' ').toLowerCase().includes(t)))
     .sort((a, b) => (typeof a[sort] === 'number' ? a[sort] - b[sort] : natural(a[sort], b[sort])) * dir || natural(a.partNumber, b.partNumber));
   const body = $('#invBody');
   if (!parts.length) {
-    body.innerHTML = `<tr><td colspan="8" class="empty-cell">No parts yet. Add a part to start your inventory.</td></tr>`;
-  } else if (!list.length) {
-    body.innerHTML = `<tr><td colspan="8" class="empty-cell">No parts match your search.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="10" class="empty-cell">No parts yet. Add a part to start your inventory.</td></tr>`;
+  } else if (!shown.length) {
+    body.innerHTML = `<tr><td colspan="10" class="empty-cell">No parts match.</td></tr>`;
   } else {
-    body.innerHTML = list.map((p) => `
-      <tr>
+    body.innerHTML = shown.map((p) => `
+      <tr class="${selected.has(p.id) ? 'picked' : ''}">
+        <td class="chk"><input type="checkbox" data-change="inv-select" data-id="${p.id}" ${selected.has(p.id) ? 'checked' : ''} aria-label="Select ${esc(p.partNumber)}"></td>
         <td class="mono">${esc(p.partNumber)}</td>
         <td>${esc(p.description)}</td>
+        <td>${p.categoryName ? esc(p.categoryName) : '<span class="muted">None</span>'}</td>
         <td class="num ${p.qty <= 0 ? 'zero' : ''}">${fmtQty(p.qty)}</td>
         <td>${p.onOrderQty > 0 ? `<span class="tag order">${fmtQty(p.onOrderQty)} ordered</span>${p.onOrderNote ? `<div class="sub">${esc(p.onOrderNote)}</div>` : ''}` : ''}</td>
         <td>${esc(p.bin)}</td>
         <td>${esc(p.vendor)}</td>
         <td class="num">${unitMoney(p.unitCost)}</td>
-        <td class="row-actions">
+        <td class="row-actions wrap">
           <button class="btn small" data-action="order" data-id="${p.id}">Order</button>
           <button class="btn small" data-action="receive" data-id="${p.id}">Receive</button>
           <button class="btn small ghost" data-action="adjust" data-id="${p.id}">Adjust</button>
@@ -78,7 +104,21 @@ function paintRows() {
       </tr>`).join('');
   }
   const ordered = parts.filter((p) => p.onOrderQty > 0).length;
-  $('#invFoot').textContent = parts.length ? `${list.length} of ${parts.length} part${parts.length === 1 ? '' : 's'} shown. ${ordered} on order.` : '';
+  $('#invFoot').textContent = parts.length ? `${shown.length} of ${parts.length} part${parts.length === 1 ? '' : 's'} shown. ${ordered} on order.` : '';
+  const all = $('#invAll');
+  if (all) { all.checked = shown.length > 0 && shown.every((p) => selected.has(p.id)); all.indeterminate = !all.checked && shown.some((p) => selected.has(p.id)); }
+  paintSelBar();
+}
+
+function paintSelBar() {
+  const bar = $('#selBar');
+  if (!bar) return;
+  bar.hidden = selected.size === 0;
+  bar.innerHTML = selected.size
+    ? `<strong>${selected.size} selected</strong>
+       <button class="btn small primary" data-action="set-category">Set category</button>
+       <button class="btn small" data-action="clear-selection">Clear selection</button>`
+    : '';
 }
 
 /* ---------- add / edit part ---------- */
@@ -101,6 +141,8 @@ async function partDialog(part = null) {
         <small id="pnMsg" class="hint" aria-live="polite"></small>
       </div>
       <label class="field"><span>Description</span><input name="description" value="${esc(part?.description ?? '')}" placeholder="GE 1AGNT vacuum tube" autocomplete="off"></label>
+      <label class="field"><span>Category</span><input name="category" list="partCats" value="${esc(part ? catName(part) : typeof S.inv.category === 'number' ? categories.find((c) => c.id === S.inv.category)?.name ?? '' : '')}" placeholder="Pick one or type a new one" autocomplete="off"></label>
+      <datalist id="partCats">${categories.map((c) => `<option value="${esc(c.name)}">`).join('')}</datalist>
       <div class="grid2">
         ${editing ? '' : `<label class="field"><span>On hand</span><input name="qty" type="number" min="0" step="any" value="0"></label>`}
         <label class="field"><span>Unit cost (each, $)</span><input name="unitCost" type="number" min="0" step="any" value="${part ? part.unitCost : ''}" placeholder="0.00"></label>
@@ -234,7 +276,7 @@ async function orderDialog(part) {
     ],
     body: `
       <p class="part-line"><strong>${esc(part.partNumber)}</strong> ${esc(part.description)}</p>
-      <p class="hint">On hand: ${fmtQty(part.qty)}. Use this for parts you have already bought that are still shipping. When they arrive, use Receive and the on-order amount drops by itself.</p>
+      <p class="hint">On hand: ${fmtQty(part.qty)}. Use this for parts you have already bought that are still shipping. When they arrive, use Receive and the on-order amount drops by itself. If this part is on a purchase order, change it on the order instead.</p>
       <div class="grid2">
         <label class="field"><span>Quantity on order</span><input name="qty" type="number" min="0" step="any" value="${part.onOrderQty > 0 ? part.onOrderQty : ''}" data-autofocus></label>
         <label class="field"><span>Note</span><input name="note" value="${esc(part.onOrderNote ?? '')}" placeholder="Order number, vendor, arrives Friday" autocomplete="off"></label>
@@ -308,11 +350,100 @@ async function historyDialog(part) {
   });
 }
 
+/* ---------- categories ---------- */
+
+async function setCategoryDialog() {
+  const ids = [...selected];
+  const ok = await openModal({
+    title: `Set category for ${ids.length} part${ids.length === 1 ? '' : 's'}`,
+    submitButtons: [{ label: 'Apply', value: 'ok' }],
+    body: `
+      <label class="field"><span>Category</span><input name="category" list="bulkCats" placeholder="Pick one or type a new one" autocomplete="off" data-autofocus></label>
+      <datalist id="bulkCats">${categories.map((c) => `<option value="${esc(c.name)}">`).join('')}</datalist>
+      <p class="hint">Type a name that does not exist yet and it is created. Leave it blank to clear the category from the selected parts.</p>`,
+    onSubmit: async (form) => { await D.setPartsCategory(ids, formData(form).category); return 'ok'; },
+  });
+  if (ok === 'ok') { selected.clear(); toast('Category set'); await S.render(); }
+}
+
+// Rename, delete, or add categories. Loops so the list refreshes after each change.
+async function manageCategoriesDialog() {
+  for (;;) {
+    const cats = await D.listPartCategories();
+    const counts = new Map(); for (const p of await D.listParts()) counts.set(p.categoryId, (counts.get(p.categoryId) ?? 0) + 1);
+    const result = await openModal({
+      title: 'Categories', cancelLabel: 'Done', submitButtons: [],
+      body: `
+        ${cats.length ? `<div class="table-wrap"><table class="data compact"><thead><tr><th>Name</th><th class="num">Parts</th><th><span class="sr-only">Delete</span></th></tr></thead><tbody>
+          ${cats.map((c) => `<tr><td><input data-cat="${c.id}" value="${esc(c.name)}" aria-label="Category name"></td><td class="num">${counts.get(c.id) ?? 0}</td>
+            <td class="row-actions"><button type="button" class="btn small ghost danger-text" data-del="${c.id}">Delete</button></td></tr>`).join('')}
+        </tbody></table></div>` : '<p class="empty-note">No categories yet. Add the first one below.</p>'}
+        <div class="input-row add-cat"><input id="newCat" placeholder="New category, such as Tubes" autocomplete="off"><button type="button" class="btn primary" id="addCat">Add category</button></div>
+        <p class="hint">Rename a category by editing its name. Deleting one never deletes parts. They just become uncategorized.</p>`,
+      onMount: (api) => {
+        const f = api.form;
+        f.querySelectorAll('[data-cat]').forEach((inp) => inp.addEventListener('change', async () => {
+          try { await D.renamePartCategory(Number(inp.dataset.cat), inp.value); api.error(''); } catch (e) { api.error(e.message); }
+        }));
+        f.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => api.close(`del:${b.dataset.del}`)));
+        const add = async () => {
+          const v = $('#newCat', f).value;
+          if (!v.trim()) return;
+          try { await D.ensurePartCategory(v); api.close('refresh'); } catch (e) { api.error(e.message); }
+        };
+        $('#addCat', f).addEventListener('click', add);
+        $('#newCat', f).addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+      },
+    });
+    if (result === 'refresh') continue;
+    if (typeof result === 'string' && result.startsWith('del:')) {
+      const id = Number(result.slice(4));
+      const cat = cats.find((c) => c.id === id);
+      const n = counts.get(id) ?? 0;
+      const v = await confirmChoice({
+        title: `Delete ${cat.name}?`, message: n ? `${n} part${n === 1 ? '' : 's'} will become uncategorized. The parts themselves are kept.` : 'No parts use this category.',
+        choices: [{ label: 'Delete category', value: 'yes', kind: 'danger' }],
+      });
+      if (v === 'yes') { await D.deletePartCategory(id); toast('Category deleted'); }
+      continue;
+    }
+    break;
+  }
+  await S.render();
+}
+
+// Proposes a category for each uncategorized part from its description and part number.
+async function suggestCategoriesDialog() {
+  const rows = parts.filter((p) => p.categoryId == null).map((p) => ({ p, name: D.suggestPartCategoryName(p) })).filter((r) => r.name);
+  if (!rows.length) { toast('No suggestions. Set categories by hand instead.'); return; }
+  const ok = await openModal({
+    title: 'Suggested categories', wide: true, submitButtons: [{ label: 'Apply checked suggestions', value: 'ok' }],
+    body: `
+      <p class="hint">These are guesses from each description and part number. Untick any that are wrong. Parts that are not listed are left alone.</p>
+      <div class="table-wrap short"><table class="data compact"><thead><tr><th class="chk"></th><th>Part number</th><th>Description</th><th>Suggested category</th></tr></thead><tbody>
+        ${rows.map((r, i) => `<tr><td class="chk"><input type="checkbox" name="s${i}" checked aria-label="Apply to ${esc(r.p.partNumber)}"></td><td class="mono">${esc(r.p.partNumber)}</td><td>${esc(r.p.description)}</td><td>${esc(r.name)}</td></tr>`).join('')}
+      </tbody></table></div>`,
+    onSubmit: async (form) => {
+      const d = formData(form);
+      const byName = new Map();
+      rows.forEach((r, i) => { if (d[`s${i}`]) { if (!byName.has(r.name)) byName.set(r.name, []); byName.get(r.name).push(r.p.id); } });
+      for (const [name, ids] of byName) await D.setPartsCategory(ids, name);
+      return String([...byName.values()].reduce((t, x) => t + x.length, 0));
+    },
+  });
+  if (ok && ok !== 'ok') { toast(`Categorized ${ok} part${ok === '1' ? '' : 's'}`); await S.render(); }
+}
+
 const byId = (el) => parts.find((p) => p.id === Number(el.dataset.id));
 
 export const actions = {
   'add-part': () => partDialog(),
   'edit-part': (el) => partDialog(byId(el)),
+  'inv-category': (el) => { const v = el.dataset.value; S.inv.category = v === 'all' || v === 'none' ? v : Number(v); return S.render(); },
+  'manage-categories': () => manageCategoriesDialog(),
+  'suggest-categories': () => suggestCategoriesDialog(),
+  'set-category': () => setCategoryDialog(),
+  'clear-selection': () => { selected.clear(); paintRows(); },
   order: (el) => orderDialog(byId(el)),
   receive: (el) => receiveDialog(byId(el)),
   adjust: (el) => adjustDialog(byId(el)),
@@ -324,4 +455,7 @@ export const actions = {
     return S.render();
   },
 };
-export const changes = {};
+export const changes = {
+  'inv-select': (el) => { const id = Number(el.dataset.id); if (el.checked) selected.add(id); else selected.delete(id); paintRows(); },
+  'inv-select-all': (el) => { for (const p of shown) { if (el.checked) selected.add(p.id); else selected.delete(p.id); } paintRows(); },
+};

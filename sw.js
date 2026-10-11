@@ -2,7 +2,7 @@
 // Files are served from the saved copy first and refreshed in the background, so a
 // change you upload shows up the second time the app opens. Bump VERSION when you
 // add or rename files so the new list is saved right away.
-const VERSION = 'v2';
+const VERSION = 'v4';
 const CACHE = `niogen-${VERSION}`;
 const FILES = [
   './', 'index.html',
@@ -15,9 +15,12 @@ const FILES = [
   'pricing.js',
   'backup.js',
   'theme.js',
+  'purchasing.js',
   'radios.js',
   'radio.js',
   'inventory.js',
+  'orders.js',
+  'order.js',
   'reports.js',
   'settings.js',
   'dexie.min.mjs',

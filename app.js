@@ -8,10 +8,12 @@ import { $, $$, esc, toast } from './ui.js';
 import * as Radios from './radios.js';
 import * as Radio from './radio.js';
 import * as Inventory from './inventory.js';
+import * as Orders from './orders.js';
+import * as Order from './order.js';
 import * as Reports from './reports.js';
 import * as Settings from './settings.js';
 
-const views = { radios: Radios, radio: Radio, inventory: Inventory, reports: Reports, settings: Settings };
+const views = { radios: Radios, radio: Radio, inventory: Inventory, orders: Orders, order: Order, reports: Reports, settings: Settings };
 const BACKUP_NAG_DAYS = 14;
 
 /* ---------- routing and rendering ---------- */
@@ -19,12 +21,13 @@ const BACKUP_NAG_DAYS = 14;
 function parseRoute() {
   const [a, b] = location.hash.replace(/^#\/?/, '').split('/');
   if (a === 'radio' && Number(b)) return { name: 'radio', id: Number(b) };
-  if (['inventory', 'reports', 'settings'].includes(a)) return { name: a };
+  if (a === 'order' && Number(b)) return { name: 'order', id: Number(b) };
+  if (['inventory', 'orders', 'reports', 'settings'].includes(a)) return { name: a };
   return { name: 'radios' };
 }
 
 let queue = Promise.resolve();
-const TITLES = { radios: 'Radios', inventory: 'Inventory', reports: 'Reports', settings: 'Settings' };
+const TITLES = { radios: 'Radios', inventory: 'Inventory', orders: 'Orders', order: 'Order', reports: 'Reports', settings: 'Settings' };
 
 function render({ top = false } = {}) {
   queue = queue.then(() => draw(top)).catch((e) => console.error(e));
@@ -38,7 +41,7 @@ async function draw(top) {
   S.sellers = await listSellers();
   const route = parseRoute();
   $$('.nav a').forEach((a) => {
-    const on = a.dataset.route === route.name || (route.name === 'radio' && a.dataset.route === 'radios');
+    const on = a.dataset.route === route.name || (route.name === 'radio' && a.dataset.route === 'radios') || (route.name === 'order' && a.dataset.route === 'orders');
     a.classList.toggle('on', on);
     if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });

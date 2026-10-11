@@ -21,12 +21,14 @@ export async function render(view) {
 
     <section class="panel">
       <h2>Defaults for new radios</h2>
-      <div class="grid3">
+      <div class="grid4">
         <label class="field"><span>Labor ($ flat)</span><input type="number" min="0" step="any" data-change="default" data-key="laborRate" value="${s.laborRate}"></label>
+        <label class="field"><span>Consumables ($)</span><input type="number" min="0" step="any" data-change="default" data-key="consumables" value="${s.consumables ?? 0}"></label>
         <label class="field"><span>Sales tax on parts (%)</span><input type="number" min="0" max="100" step="any" data-change="default" data-key="taxPct" value="${s.taxPct}"></label>
         <label class="field"><span>Cushion (%)</span><input type="number" min="0" max="99" step="any" data-change="default" data-key="cushionPct" value="${s.cushionPct}"></label>
       </div>
-      <p class="hint">These are copied onto each new radio when you create it. Radios you already have keep their own rates. The cushion is the share of every selling price you want left over after costs and site fees.</p>
+      <p class="hint">These are copied onto each new radio when you create it. Radios you already have keep their own rates. Consumables is a flat amount per radio for stain, polish, and supplies, so those costs get recovered over time. The cushion is the share of every selling price you want left over after costs and site fees.</p>
+      <div class="btn-row"><button class="btn" data-action="apply-consumables">Apply the consumables amount to radios not yet sold</button></div>
     </section>
 
     <section class="panel">
@@ -133,6 +135,19 @@ async function restoreFile(file) {
 }
 
 export const actions = {
+  'apply-consumables': async () => {
+    const amount = (await D.getSettings()).consumables ?? 0; // read fresh: the field may have just been edited
+    const n = await D.db.radios.filter((r) => r.status !== 'sold').count();
+    if (!n) { toast('Every radio is already sold.'); return; }
+    const v = await confirmChoice({
+      title: 'Apply consumables?',
+      message: `Set consumables to ${money(amount)} on the ${n} radio${n === 1 ? '' : 's'} that ${n === 1 ? 'is' : 'are'} not sold yet. Their costs and suggested prices will change. Sold radios keep what they were charged.`,
+      choices: [{ label: `Set to ${money(amount)}`, value: 'yes', kind: 'primary' }],
+    });
+    if (v !== 'yes') return;
+    await D.applyConsumablesToUnsold(amount);
+    toast(`Consumables set on ${n} radio${n === 1 ? '' : 's'}`);
+  },
   'add-seller': () => addSellerDialog(),
   'delete-seller': async (el) => {
     const x = S.sellers.find((v) => v.id === Number(el.dataset.id));

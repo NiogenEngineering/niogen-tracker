@@ -2,6 +2,7 @@
 
 import { S, urlFor } from './state.js';
 import * as D from './db.js';
+import * as O from './purchasing.js';
 import { computeCosts, suggestedPrice, profitAt, sellerFee, actualProfit, num } from './pricing.js';
 import {
   esc, money, unitMoney, fmtQty, fmtPct, fmtDate, dateInputValue, fromDateInput, formData,
@@ -20,7 +21,7 @@ const AUX_PRESETS = ['Radio purchase', 'Shipping in', 'Shipping out', 'Market ma
 
 function compute() {
   const { radio, components, aux, listings } = B;
-  const costs = computeCosts({ components, aux, laborRate: radio.laborRate, taxPct: radio.taxPct });
+  const costs = computeCosts({ components, aux, laborRate: radio.laborRate, taxPct: radio.taxPct, consumables: radio.consumables });
   const rows = S.sellers.filter((s) => s.active).map((seller) => {
     const suggested = suggestedPrice(costs.total, seller, radio.cushionPct);
     const listed = listings.find((l) => l.sellerId === seller.id)?.price ?? null;
@@ -30,9 +31,12 @@ function compute() {
 }
 
 async function reload() {
-  B = await D.loadRadioBundle(B.radio.id);
+  const fresh = await D.loadRadioBundle(B.radio.id);
+  fresh.incoming = await O.listIncomingForRadio(B.radio.id);
+  if (!$('#assetHead')) return; // the person already moved to another screen while this finished
+  B = fresh;
   compute();
-  paintHead(); paintComponents(); paintCosts(); paintListings();
+  paintHead(); paintComponents(); paintIncoming(); paintCosts(); paintListings();
 }
 
 export async function render(el, route) {
@@ -42,6 +46,7 @@ export async function render(el, route) {
     el.innerHTML = `<div class="panel empty"><h2>Radio not found</h2><p>It may have been deleted.</p><a class="btn primary" href="#/radios">Back to radios</a></div>`;
     return;
   }
+  B.incoming = await O.listIncomingForRadio(B.radio.id);
   compute();
   el.innerHTML = `
     <a class="back" href="#/radios">&larr; All radios</a>
@@ -51,11 +56,12 @@ export async function render(el, route) {
       <section class="panel" id="photosPanel"></section>
     </div>
     <section class="panel" id="componentsPanel"></section>
+    <section class="panel" id="incomingPanel"></section>
     <div class="two-col">
       <section class="panel" id="costPanel"></section>
       <section class="panel" id="listingsPanel"></section>
     </div>`;
-  paintHead(); paintDetails(); paintPhotos(); paintComponents(); paintCosts(); paintListings();
+  paintHead(); paintDetails(); paintPhotos(); paintComponents(); paintIncoming(); paintCosts(); paintListings();
   document.title = `${D.radioName(B.radio)} - Niogen Tracker`;
 }
 
@@ -536,6 +542,26 @@ async function removeLine(comp) {
   await reload();
 }
 
+/* ---------- incoming parts (from purchase orders) ---------- */
+
+function paintIncoming() {
+  const rows = B.incoming ?? [];
+  const waiting = rows.filter((l) => (l.receivedQty || 0) < l.qty && l.order.status !== 'cancelled' && l.order.status !== 'draft').length;
+  $('#incomingPanel').innerHTML = `
+    <div class="panel-head"><h2>Incoming parts</h2>${rows.length ? `<span class="muted">${waiting} on the way, ${rows.length - waiting} here</span>` : ''}</div>
+    ${rows.length ? `<div class="table-wrap"><table class="data compact">
+      <thead><tr><th>Part</th><th class="num">Qty</th><th>Order</th><th>Status</th><th>Note</th></tr></thead>
+      <tbody>${rows.map((l) => {
+        const got = Math.min(l.receivedQty || 0, l.qty);
+        const status = l.order.status === 'draft' ? '<span class="chip os-draft">Draft</span>'
+          : got >= l.qty ? '<span class="chip os-received">Received</span>'
+          : got > 0 ? `<span class="chip os-partly">${fmtQty(got)} of ${fmtQty(l.qty)} here</span>` : '<span class="chip os-ordered">On order</span>';
+        return `<tr><td><span class="mono">${esc(l.part.partNumber)}</span> ${esc(l.part.description)}</td><td class="num">${fmtQty(l.qty)}</td>
+          <td><a href="#/order/${l.order.id}" class="mono">${esc(l.order.number)}</a> <span class="muted">${esc(l.order.vendor)}</span></td><td>${status}</td><td class="muted">${esc(l.note)}</td></tr>`;
+      }).join('')}</tbody></table></div>`
+      : '<p class="hint">Nothing is coming for this radio. On an order, choose this radio in an item\'s "For radio" menu and it shows up here.</p>'}`;
+}
+
 /* ---------- costs ---------- */
 
 function paintCosts() {
@@ -546,26 +572,28 @@ function paintCosts() {
       <div><dt>Parts</dt><dd>${money(costs.parts)}</dd></div>
       <div><dt>Sales tax on parts (${fmtPct(r.taxPct)})</dt><dd>${money(costs.tax)}</dd></div>
       <div><dt>Labor</dt><dd>${money(costs.labor)}</dd></div>
+      <div><dt>Consumables (stain, polish)</dt><dd>${money(costs.consumables)}</dd></div>
       <div><dt>Auxiliary costs</dt><dd>${money(costs.aux)}</dd></div>
       <div class="total"><dt>Total cost</dt><dd>${money(costs.total)}</dd></div>
     </dl>
     <h3>Auxiliary costs</h3>
     ${B.aux.length
       ? `<ul class="aux-list">${[...B.aux].sort((a, b) => a.id - b.id).map((a) => `
-          <li><span>${esc(a.label)}</span><span class="amt">${money(a.amount)}</span>
-            <span class="row-actions"><button class="btn small ghost" data-action="edit-aux" data-id="${a.id}">Edit</button>
-            <button class="btn small ghost danger-text" data-action="remove-aux" data-id="${a.id}">Remove</button></span></li>`).join('')}</ul>`
+          <li><span>${esc(a.label)}${a.orderId ? ` <a class="tag" href="#/order/${a.orderId}" title="Set by the purchase order. Change it there.">Order</a>` : ''}</span><span class="amt">${money(a.amount)}</span>
+            <span class="row-actions">${a.orderId ? '' : `<button class="btn small ghost" data-action="edit-aux" data-id="${a.id}">Edit</button>
+            <button class="btn small ghost danger-text" data-action="remove-aux" data-id="${a.id}">Remove</button>`}</span></li>`).join('')}</ul>`
       : '<p class="hint">Radio purchase price and anything else that is not a part goes here.</p>'}
     <div class="chip-row" aria-label="Add a cost">
       ${AUX_PRESETS.map((p) => `<button class="chip-btn" data-action="add-aux" data-label="${esc(p)}">Add ${esc(p.toLowerCase())}</button>`).join('')}
     </div>
     <h3>Rates for this radio</h3>
-    <div class="grid3">
+    <div class="grid2">
       <label class="field"><span>Labor ($ flat)</span><input type="number" min="0" step="any" data-change="rate" data-field="laborRate" value="${r.laborRate}"></label>
+      <label class="field"><span>Consumables ($)</span><input type="number" min="0" step="any" data-change="rate" data-field="consumables" value="${r.consumables ?? 0}"></label>
       <label class="field"><span>Sales tax on parts (%)</span><input type="number" min="0" max="100" step="any" data-change="rate" data-field="taxPct" value="${r.taxPct}"></label>
       <label class="field"><span>Cushion (%)</span><input type="number" min="0" max="99" step="any" data-change="rate" data-field="cushionPct" value="${r.cushionPct}"></label>
     </div>
-    <p class="hint">New radios start from the defaults in Settings. Changing a rate here affects only this radio.</p>`;
+    <p class="hint">Consumables is a flat charge for the stain, polish, and supplies used up on this radio. It is part of the cost and is not taxed. New radios start from the defaults in Settings. A rate changed here affects only this radio.</p>`;
 }
 
 async function auxDialog(row = null, presetLabel = '') {
